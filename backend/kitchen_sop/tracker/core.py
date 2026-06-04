@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .models import RunRecord, StepRecord
 from ..config import RUNS_DIR
+from ..checkpoint import CheckpointManager
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -31,10 +32,15 @@ class RunTracker:
         mode: str,
         variables: Optional[dict] = None,
         runs_dir = None,
+        enable_checkpoint: bool = False,
     ):
         self.record = RunRecord.new(skill_name, mode, variables)
         self.runs_dir = Path(runs_dir) if runs_dir else RUNS_DIR
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+        self.enable_checkpoint = enable_checkpoint
+        self._cp_manager: Optional[CheckpointManager] = None
+        if enable_checkpoint:
+            self._cp_manager = CheckpointManager(runs_dir=self.runs_dir)
 
     async def __aenter__(self):
         logger.info(f"📊 RunTracker 启动 | run_id={self.record.run_id}")
@@ -74,12 +80,53 @@ class RunTracker:
         step.status = "success"
         step.result_text = result_text
         step.duration_ms = self._calc_duration_ms(step.started_at, step.ended_at)
+        if self.enable_checkpoint and self._cp_manager:
+            cp = self._cp_manager.save_checkpoint(
+                run_id=self.record.run_id,
+                step_index=step.step_index,
+                step_status="after_step",
+                variables=self.record.variables or {},
+                step_results=self.record.steps,
+            )
+            step.checkpoint_id = cp.checkpoint_id
 
     def fail_step(self, step: StepRecord, error_message: str):
         step.ended_at = datetime.now().isoformat(timespec="seconds")
         step.status = "error"
         step.error_message = error_message
         step.duration_ms = self._calc_duration_ms(step.started_at, step.ended_at)
+        if self.enable_checkpoint and self._cp_manager:
+            cp = self._cp_manager.save_checkpoint(
+                run_id=self.record.run_id,
+                step_index=step.step_index,
+                step_status="error",
+                variables=self.record.variables or {},
+                step_results=self.record.steps,
+            )
+            step.checkpoint_id = cp.checkpoint_id
+
+    def save_before_step_checkpoint(self, step_index: int, tool_name: str, arguments: Dict[str, Any]):
+        """在执行某步之前保存检查点（用于断点续作）."""
+        if self.enable_checkpoint and self._cp_manager:
+            # 先构造一个 pending 状态的 step record 用于保存
+            pending_step = StepRecord(
+                step_index=step_index,
+                tool_name=tool_name,
+                arguments=arguments,
+                status="pending",
+                started_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            steps_snapshot = self.record.steps + [pending_step]
+            cp = self._cp_manager.save_checkpoint(
+                run_id=self.record.run_id,
+                step_index=step_index,
+                step_status="before_step",
+                variables=self.record.variables or {},
+                step_results=steps_snapshot,
+            )
+            pending_step.checkpoint_id = cp.checkpoint_id
+            return cp
+        return None
 
     def _persist(self):
         path = self.runs_dir / f"{self.record.run_id}.json"

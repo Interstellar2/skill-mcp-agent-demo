@@ -1,8 +1,8 @@
 # Kitchen SOP Demo - Skill + MCP + LangChain 演示项目
 
-一个展示**结构化 Skill 管理**、**MCP 工具协议**、**LangChain Agent** 与**可视化 Web UI** 如何协同工作的演示项目。
+一个展示**结构化 Skill 管理**、**MCP 工具协议**、**LangChain Agent**、**多种执行编排模式**与**可视化 Web UI** 如何协同工作的演示项目。
 
-用三道中餐菜谱（番茄炒蛋、宫保鸡丁、可乐鸡翅）作为示例，让 LLM 或直接按 SOP 流程调用"厨房工具"完成做菜，并通过 Web UI 可视化查看 Skill 内容与执行流程。
+用三道中餐菜谱（番茄炒蛋、宫保鸡丁、可乐鸡翅）作为示例，让 LLM 或直接按 SOP 流程调用"厨房工具"完成做菜，支持**计划-执行分离**、**人在回路**、**并行执行**与**断点续作/回滚**，并通过 Web UI 可视化查看 Skill 内容与执行流程。
 
 ---
 
@@ -28,9 +28,16 @@
 └─────────────────────────────────────────────────────────────┘
                               ↓ 调用
 ┌─────────────────────────────────────────────────────────────┐
-│                     Agent / Demo 执行层                        │
-│  backend/kitchen_sop/executors/demo.py  ──  直接按 SOP 执行    │
-│  backend/kitchen_sop/executors/agent.py ──  LangChain + LLM    │
+│                  执行引擎层（6 种模式 + 共享基类）               │
+│  base.py              ──  SkillExecutorContext + 通用工具封装  │
+│  demo.py              ──  顺序执行（无需 API Key）              │
+│  agent.py             ──  LLM 自主决策                          │
+│  plan_then_execute.py ──  计划-执行分离                         │
+│  hitl.py              ──  人在回路（Human-in-the-Loop）         │
+│  parallel.py          ──  DAG 拓扑并行执行                      │
+│  resumable.py         ──  检查点 + 自动断电续作                  │
+│  resume.py            ──  从检查点恢复执行                      │
+│  rollback.py          ──  回滚到指定步骤重试                    │
 └─────────────────────────────────────────────────────────────┘
                               ↓ JSON-RPC (stdio)
 ┌─────────────────────────────────────────────────────────────┐
@@ -50,7 +57,7 @@
 |---|---|---|
 | **Skill** | 定义"做什么"（SOP 流程、工具映射、参数） | 菜谱 |
 | **Skill Manager / Parser** | 加载、解析、管理多个 Skill | 菜谱架 |
-| **Executors** | 决定"怎么做"（顺序执行或 LLM 决策） | 厨师大脑 |
+| **Executors** | 决定"怎么做"（顺序/LLM/并行/人在回路等） | 厨师大脑 |
 | **MCP Server** | 实际"动手做"（工具实现） | 厨房设备 |
 | **Web UI** | 可视化展示 Skill 内容与流程 | 电子菜谱屏 |
 
@@ -130,6 +137,47 @@ python backend/main.py --agent --skill kung_pao_chicken --model gpt-4o
 
 > 如果没有配置 `OPENAI_API_KEY`，会自动回退到 Demo 模式。
 
+### Plan-then-Execute 模式（需要 LLM）
+
+先由 LLM 生成结构化执行计划，再严格按计划顺序执行，执行阶段不依赖 LLM：
+
+```bash
+python backend/main.py --plan-then-execute --skill tomato_egg
+```
+
+### Human-in-the-Loop 模式
+
+在关键步骤执行前暂停，等待人工确认（支持确认/拒绝/修改参数）：
+
+```bash
+python backend/main.py --hitl --skill tomato_egg
+```
+
+> 需要在 `SKILL.md` 的 frontmatter 中配置 `human_in_the_loop` 规则。
+
+### 并行执行模式
+
+解析 SOP 中的 `[parallel-group]` 和 `[depends-on]` 标记，将无依赖步骤分组并行执行：
+
+```bash
+python backend/main.py --parallel --skill tomato_egg
+```
+
+### 断电续作 / 回滚
+
+使用 `--resumable` 执行时自动保存检查点，支持从断点恢复或回滚到指定步骤重试：
+
+```bash
+# 带检查点的顺序执行
+python backend/main.py --resumable --skill tomato_egg
+
+# 从断点恢复（继续执行未完成的步骤）
+python backend/main.py --resume <run_id>
+
+# 回滚到步骤 3 重新执行
+python backend/main.py --rollback <run_id> --to-step 3
+```
+
 ### Web UI 可视化
 
 启动前端开发服务器，在浏览器中查看 Skill 列表、SOP 内容与流程图：
@@ -157,15 +205,15 @@ python backend/main.py --replay abc123
 
 ---
 
-## 两种模式对比
+## 六种执行模式对比
 
-| 特性 | Demo 模式 | Agent 模式 |
-|---|---|---|
-| 需要 API Key | ❌ 不需要 | ✅ 需要 |
-| 执行方式 | 严格按 SOP 顺序 | LLM 自主决策 |
-| 适用场景 | 确定性流程（标准工单、SOP） | 需要灵活决策的场景 |
-| 可解释性 | 完全透明 | 依赖 LLM 推理 |
-| 执行时间 | 秒级 | 取决于模型响应速度 |
+| 特性 | Demo | Agent | Plan-then-Execute | HITL | Parallel | Resumable |
+|---|---|---|---|---|---|---|
+| 需要 API Key | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| 执行方式 | 严格顺序 | LLM 自主决策 | 计划→顺序执行 | 顺序+人工确认 | DAG 拓扑并行 | 顺序+自动检查点 |
+| 适用场景 | 确定性流程 | 灵活决策 | 可控的 LLM 辅助 | 关键步骤需审批 | 可并行步骤 | 长流程防中断 |
+| 可解释性 | 完全透明 | 依赖 LLM | 计划透明 | 完全透明 | 完全透明 | 完全透明 |
+| 执行时间 | 秒级 | 模型依赖 | 模型+秒级 | 人工依赖 | 秒级 | 秒级 |
 
 ---
 
@@ -174,7 +222,10 @@ python backend/main.py --replay abc123
 ```
 .
 ├── backend/                         # Python 后端
-│   ├── main.py                      # 命令行入口
+│   ├── main.py                      # 命令行入口（委托 cli / commands / router）
+│   ├── cli.py                       # 参数解析器（argparse）
+│   ├── commands.py                  # 查询类命令（--list-runs / --replay）
+│   ├── router.py                    # 执行路由（模式解析 + executor 分发）
 │   ├── mcp_server.py                # MCP 厨房工具服务器（独立进程）
 │   ├── requirements.txt             # Python 依赖
 │   └── kitchen_sop/                 # 核心包
@@ -189,12 +240,20 @@ python backend/main.py --replay abc123
 │       ├── mcp_client.py            # MCP 客户端连接管理
 │       ├── tracker/                 # 执行观测与审计
 │       │   ├── __init__.py
-│       │   ├── models.py            # RunRecord / StepRecord 数据模型
+│       │   ├── models.py            # RunRecord / StepRecord / ExecutionPlan / Checkpoint 数据模型
 │       │   └── core.py              # RunTracker 上下文管理器与持久化
-│       └── executors/               # 执行器
+│       ├── checkpoint.py            # 检查点管理器（CheckpointManager）
+│       └── executors/               # 执行器（共享基类 + 6 种模式）
 │           ├── __init__.py
+│           ├── base.py              # SkillExecutorContext + execute_step 通用封装
 │           ├── demo.py              # Demo 模式：按 SOP 顺序执行
-│           └── agent.py             # Agent 模式：LangChain + LLM 自主决策
+│           ├── agent.py             # Agent 模式：LangChain + LLM 自主决策
+│           ├── plan_then_execute.py # Plan-then-Execute：计划-执行分离
+│           ├── hitl.py              # Human-in-the-Loop：人在回路
+│           ├── parallel.py          # Parallel：DAG 拓扑并行执行
+│           ├── resumable.py         # Resumable：检查点 + 自动断电续作
+│           ├── resume.py            # Resume：从检查点恢复执行
+│           └── rollback.py          # Rollback：回滚到指定步骤重试
 │
 ├── frontend/                        # Vite + TypeScript 前端
 │   ├── index.html
@@ -204,7 +263,9 @@ python backend/main.py --replay abc123
 │   ├── src/
 │   │   ├── main.ts                  # 入口
 │   │   ├── app.ts                   # 应用逻辑（Skill 列表、Markdown 渲染）
-│   │   ├── graph.ts                 # Cytoscape 流程图渲染
+│   │   ├── graph.ts                 # Cytoscape 流程图主函数
+│   │   ├── graph-styles.ts          # Cytoscape 样式配置（节点颜色、边样式）
+│   │   ├── graph-events.ts          # Cytoscape 事件绑定（hover、点击、resize）
 │   │   ├── parser.ts                # Markdown / frontmatter 解析器
 │   │   ├── types.ts                 # 类型定义
 │   │   └── style.css                # 样式
@@ -248,6 +309,7 @@ python backend/main.py --replay abc123
 │   └── mcp_server_YYYY-MM-DD.log    # MCP 服务端日志
 │
 ├── runs/                            # 执行记录（自动生成，每条一个 JSON）
+│   └── checkpoints/                 # 检查点文件（Resumable 模式自动生成）
 ├── .env.example                     # 环境变量模板
 └── README.md                        # 本文件
 ```
@@ -315,6 +377,26 @@ tools:
 - `**参数**:` 下的 `- key: value` 会被提取为工具调用参数
 - 支持自动类型转换：`true`/`false` → bool，`30` → int
 - 支持模板变量：`{{variable_name}}` 会被执行时传入的值替换
+
+**并行执行标记**（Parallel 模式专用）：
+```markdown
+**工具**: `cut_ingredient` [parallel-group: prep]
+**工具**: `crack_egg` [parallel-group: prep]
+**工具**: `heat_pan` [depends-on: prep]
+```
+- `[parallel-group: xxx]`：将步骤归入并行组，同组步骤无互相依赖，可并行执行
+- `[depends-on: xxx]`：显式依赖某个并行组（取该组最后一个步骤作为依赖点）
+
+**Human-in-the-Loop 配置**（HITL 模式专用）：
+```yaml
+human_in_the_loop:
+  - step: 4
+    prompt: "确认油温合适，准备倒入蛋液进行滑炒？"
+  - tool: season
+    prompt: "确认要加入调味料吗？"
+```
+- 支持按 `step`（步骤编号）或 `tool`（工具名）触发人工确认
+- `prompt` 中的 `{参数名}` 会被实际参数值替换
 
 ### Scripts（执行钩子）
 
@@ -448,7 +530,25 @@ python backend/main.py --replay 59a3423e5165
 
 记录内容包括：
 - 执行元数据：run_id、skill_name、mode、variables、起止时间、整体状态
-- 每一步详情：工具名、参数、执行结果/错误、耗时
+- 扩展字段：resumed_from（恢复来源）、rollback_to_step（回滚目标）、execution_plan（执行计划）
+- 每一步详情：工具名、参数、执行结果/错误、耗时、并行组 ID、检查点 ID、人工审批记录
+
+### 检查点与恢复
+
+Resumable 模式会在每步执行前后自动保存检查点到 `runs/checkpoints/<run_id>_<cp_id>.json`：
+
+```bash
+# 带检查点的顺序执行
+python backend/main.py --resumable --skill tomato_egg
+
+# 执行中断后，从最新检查点恢复
+python backend/main.py --resume <run_id>
+
+# 回滚到某一步重新执行（创建新 run，保留原记录）
+python backend/main.py --rollback <run_id> --to-step 3
+```
+
+检查点包含：当前步骤索引、步骤状态（before_step/after_step）、变量快照、已完成步骤结果。
 
 ---
 

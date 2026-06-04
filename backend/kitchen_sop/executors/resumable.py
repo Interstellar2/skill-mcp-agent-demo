@@ -1,4 +1,4 @@
-"""Demo 模式：无需 LLM，直接按 SOP 步骤顺序执行."""
+"""Checkpoint Resumable 模式：顺序执行并自动保存检查点."""
 
 import logging
 from typing import Optional
@@ -10,14 +10,14 @@ from .base import SkillExecutorContext, execute_step, log_step_call, log_step_re
 logger = logging.getLogger("kitchen_agent")
 
 
-async def run_demo_mode(
+async def run_resumable_mode(
     skill_name: str = "tomato_egg",
     skills_dir=None,
     variables: Optional[dict] = None,
 ):
-    """Demo 模式: 直接按 SOP 步骤顺序调用 MCP 工具，无需 API Key.
+    """Resumable 顺序执行模式：与 demo 类似，但启用 checkpoint.
 
-    适合快速演示 Skill + MCP 的联动效果.
+    适用于需要断电续作的场景，每次执行都会保存检查点。
     """
     async with SkillExecutorContext(
         skill_name, skills_dir=skills_dir, variables=variables
@@ -25,7 +25,7 @@ async def run_demo_mode(
         steps = ctx.steps
 
         logger.info("=" * 60)
-        logger.info("🍳 Demo 模式: 按 SOP 顺序执行")
+        logger.info("💾 Resumable 模式: 顺序执行 + 自动检查点")
         logger.info(f"   Skill: {skill_name}")
         logger.info(f"   共 {len(steps)} 个步骤")
         logger.info("=" * 60)
@@ -36,13 +36,16 @@ async def run_demo_mode(
             )
 
             async with RunTracker(
-                skill_name, mode="demo", variables=ctx.merged_vars
+                skill_name, mode="resumable", variables=ctx.merged_vars, enable_checkpoint=True
             ) as tracker:
                 logger.info(f"   Run ID: {tracker.record.run_id}")
 
                 for idx, step in enumerate(steps, 1):
                     tool_name = step["tool_name"]
                     arguments = step["arguments"]
+
+                    # 执行前保存检查点
+                    tracker.save_before_step_checkpoint(idx, tool_name, arguments)
 
                     step_rec = tracker.start_step(idx, tool_name, arguments)
                     log_step_call(idx, tool_name, arguments)
@@ -52,7 +55,9 @@ async def run_demo_mode(
                         log_step_result(text)
                     except Exception as e:
                         log_step_error(e)
+                        logger.info(f"💾 检查点已保存，可使用 --resume {tracker.record.run_id} 恢复")
+                        break
 
                 logger.info("=" * 60)
-                logger.info(f"🎉 SOP 执行完毕！{skill_name} 已完成~")
+                logger.info(f"🎉 执行完毕！{skill_name} 已完成~")
                 logger.info("=" * 60)

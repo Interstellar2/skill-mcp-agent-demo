@@ -9,6 +9,29 @@ if TYPE_CHECKING:
     from .skill_manager import SkillsManager
 
 
+def _parse_parallel_markers(line: str) -> dict:
+    """从步骤声明行解析并行执行标记.
+
+    支持的标记:
+    - [parallel-group: A]  → 属于并行组 A
+    - [depends-on: group_a] → 依赖 group_a 完成后才能执行
+    """
+    markers = {
+        "parallel_group_id": None,
+        "depends_on": [],
+    }
+    pg_match = re.search(r"\[parallel-group:\s*(\w+)\]", line, re.IGNORECASE)
+    if pg_match:
+        markers["parallel_group_id"] = pg_match.group(1)
+
+    dep_match = re.search(r"\[depends-on:\s*([\w,\s]+)\]", line, re.IGNORECASE)
+    if dep_match:
+        deps = [d.strip() for d in dep_match.group(1).split(",")]
+        markers["depends_on"] = deps
+
+    return markers
+
+
 def parse_sop_steps(
     sop_content: str,
     sm: Optional["SkillsManager"] = None,
@@ -21,6 +44,10 @@ def parse_sop_steps(
     - **工具**: `tool_name`  → 直接提取参数
     - **子流程**: `skill_name` → 递归加载并内联该 Skill 的步骤
 
+    新增支持并行标记:
+    - [parallel-group: xxx]
+    - [depends-on: xxx]
+
     Args:
         sop_content: SOP Markdown 内容.
         sm: SkillsManager 实例，用于加载子流程.
@@ -28,7 +55,7 @@ def parse_sop_steps(
         _visited: 内部使用，防止循环引用.
 
     Returns:
-        步骤列表，每个步骤包含 tool_name 和 arguments.
+        步骤列表，每个步骤包含 tool_name, arguments, parallel_group_id, depends_on.
     """
     if _visited is None:
         _visited = set()
@@ -45,6 +72,7 @@ def parse_sop_steps(
         if tool_match:
             tool_name = tool_match.group(1)
             arguments = {}
+            markers = _parse_parallel_markers(line)
             i += 1
 
             # 读取后续参数，直到遇到空行或下一个步骤标题
@@ -82,6 +110,8 @@ def parse_sop_steps(
                 {
                     "tool_name": tool_name,
                     "arguments": arguments,
+                    "parallel_group_id": markers["parallel_group_id"],
+                    "depends_on": markers["depends_on"],
                 }
             )
             continue

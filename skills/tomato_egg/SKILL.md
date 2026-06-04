@@ -17,6 +17,11 @@ tools:
   - stir_fry
   - season
   - plate
+human_in_the_loop:
+  - step: 4
+    prompt: "确认油温合适，准备倒入蛋液进行滑炒？"
+  - step: 7
+    prompt: "确认调味已完成，准备装盘？"
 ---
 
 # 番茄炒鸡蛋 SOP
@@ -32,7 +37,7 @@ tools:
 ## 操作步骤
 
 ### 步骤 1: 处理番茄
-**工具**: `cut_ingredient`
+**工具**: `cut_ingredient` [parallel-group: prep]
 **参数**:
 - ingredient: "番茄"
 - method: "切块"
@@ -40,7 +45,7 @@ tools:
 将番茄洗净后，切成大小均匀的块状备用。
 
 ### 步骤 2: 打蛋液
-**工具**: `crack_egg`
+**工具**: `crack_egg` [parallel-group: prep]
 **参数**:
 - count: {{egg_count}}
 - mix: true
@@ -48,7 +53,7 @@ tools:
 将鸡蛋打入碗中，用筷子充分搅打均匀，直到蛋液表面出现细密泡沫。
 
 ### 步骤 3: 热锅
-**工具**: `heat_pan`
+**工具**: `heat_pan` [depends-on: prep]
 **参数**:
 - temperature: "中大火"
 - duration: 30

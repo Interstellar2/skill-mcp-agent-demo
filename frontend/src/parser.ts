@@ -61,7 +61,7 @@ export function parseFrontmatter(text: string): { data: Record<string, unknown>;
 
   // Post-process: if a key got both list and dict entries, prefer list if it has items
   // Our naive parser may have set data[key] to list initially. If dict has items and list is empty, switch.
-  for (const key of Object.keys(data)) {
+  for (const _key of Object.keys(data)) {
     // This is a simplification; for our known skill format it works.
   }
 
