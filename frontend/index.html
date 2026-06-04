@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Skills 可视化</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1>Skills</h1>
+          <p class="subtitle">点击左侧 Skill 查看详情与流程图</p>
+        </div>
+        <ul id="skill-list" class="skill-list"></ul>
+      </aside>
+      <main class="main">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-icon">📋</div>
+          <p>请从左侧选择一个 Skill</p>
+        </div>
+        <div id="content-area" class="content-area hidden">
+          <div class="panel markdown-panel">
+            <div class="panel-header">
+              <h2 id="skill-title"></h2>
+              <span id="skill-tools" class="tools-tags"></span>
+            </div>
+            <div id="markdown-body" class="markdown-body"></div>
+          </div>
+          <div class="panel graph-panel">
+            <div class="panel-header">
+              <h3>流程图</h3>
+              <div class="legend">
+                <span class="legend-item"><i style="background:#FF9AA2"></i>切配</span>
+                <span class="legend-item"><i style="background:#FFDAC1"></i>热锅</span>
+                <span class="legend-item"><i style="background:#E2F0CB"></i>炒制</span>
+                <span class="legend-item"><i style="background:#B5EAD7"></i>调味</span>
+                <span class="legend-item"><i style="background:#C7CEEA"></i>装盘</span>
+                <span class="legend-item"><i style="background:#F8B195"></i>子流程</span>
+              </div>
+            </div>
+            <div id="cy" class="cy-container"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

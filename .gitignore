@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# 自动生成/运行时产物
+frontend/public/skills_data.json
+runs/
+
+# 日志与环境
+logs/
+.env
+.env.local
+
+# 系统文件
+.DS_Store
+
+# IDE（可选）
+.idea/
+.vscode/
+
+# Claude Code 本地配置
+.claude/

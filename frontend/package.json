@@ -1,0 +1,20 @@
+{
+  "name": "skills-webui",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build:skills": "python ../scripts/build_skills_json.py",
+    "dev": "npm run build:skills && vite",
+    "build": "npm run build:skills && tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/cytoscape": "^3.21.9",
+    "typescript": "~5.8.0",
+    "vite": "^6.3.0"
+  },
+  "dependencies": {
+    "cytoscape": "^3.31.0",
+    "marked": "^15.0.0"
+  }
+}
