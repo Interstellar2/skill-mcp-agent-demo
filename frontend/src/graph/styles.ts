@@ -1,4 +1,4 @@
-import type { SkillStep } from './types'
+import type { SkillStep } from '../types'
 
 export const TOOL_COLORS: Record<string, string> = {
   cut_ingredient: '#FF9AA2',
@@ -20,7 +20,7 @@ export function getNodeLabel(step: SkillStep): string {
   return `${step.number}. ${step.title}`
 }
 
-export function createGraphStyle() {
+export function createGraphStyle(): any[] {
   return [
     {
       selector: 'node',
@@ -77,6 +77,46 @@ export function createGraphStyle() {
         'border-width': 3,
         'shadow-blur': 12,
         'shadow-color': 'rgba(59, 130, 246, 0.15)',
+      },
+    },
+    {
+      selector: '.node-running',
+      style: {
+        'border-color': '#3b82f6',
+        'border-width': 3,
+        'background-color': '#dbeafe',
+        'shadow-blur': 12,
+        'shadow-color': 'rgba(59, 130, 246, 0.3)',
+      },
+    },
+    {
+      selector: '.node-success',
+      style: {
+        'border-color': '#22c55e',
+        'border-width': 3,
+        'background-color': '#dcfce7',
+        'shadow-blur': 12,
+        'shadow-color': 'rgba(34, 197, 94, 0.2)',
+      },
+    },
+    {
+      selector: '.node-error',
+      style: {
+        'border-color': '#ef4444',
+        'border-width': 3,
+        'background-color': '#fee2e2',
+        'shadow-blur': 12,
+        'shadow-color': 'rgba(239, 68, 68, 0.2)',
+      },
+    },
+    {
+      selector: '.batch-active',
+      style: {
+        'border-color': '#a855f7',
+        'border-width': 3,
+        'background-color': '#f3e8ff',
+        'shadow-blur': 12,
+        'shadow-color': 'rgba(168, 85, 247, 0.2)',
       },
     },
   ]

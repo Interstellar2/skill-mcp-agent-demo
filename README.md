@@ -1,56 +1,45 @@
 # Kitchen SOP Demo - Skill + MCP + LangChain 演示项目
 
-一个展示**结构化 Skill 管理**、**MCP 工具协议**、**LangChain Agent**、**多种执行编排模式**与**可视化 Web UI** 如何协同工作的演示项目。
+一个展示**结构化 Skill 管理**、**MCP 工具协议**、**LangChain Agent**、**多种执行编排模式**与**交互式 Web 控制面板**如何协同工作的演示项目。
 
-用三道中餐菜谱（番茄炒蛋、宫保鸡丁、可乐鸡翅）作为示例，让 LLM 或直接按 SOP 流程调用"厨房工具"完成做菜，支持**计划-执行分离**、**人在回路**、**并行执行**与**断点续作/回滚**，并通过 Web UI 可视化查看 Skill 内容与执行流程。
+用三道中餐菜谱（番茄炒蛋、宫保鸡丁、可乐鸡翅）作为示例，让 LLM 或直接按 SOP 流程调用"厨房工具"完成做菜，支持**计划-执行分离**、**人在回路**、**并行执行**与**断点续作/回滚**，并通过完整的 Web UI 实时控制执行、查看流程图高亮与执行日志。
 
 ---
 
 ## 项目架构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Skill 层（流程定义）                        │
-│  skills/tomato_egg/SKILL.md          # Markdown + YAML        │
-│  skills/kung_pao_chicken/SKILL.md    # 标准操作流程            │
-│  skills/kung_pao_chicken/scripts/    # 执行钩子脚本            │
-│  skills/kung_pao_chicken/reference/  # 参考资料                │
-│  skills/kung_pao_chicken/templates/  # 输出模板                │
-└─────────────────────────────────────────────────────────────┘
-                              ↓ 加载 / 解析
-┌─────────────────────────────────────────────────────────────┐
-│                   Skill Manager（技能管理）                    │
-│  backend/kitchen_sop/skill_manager.py    ──  扫描目录、解析      │
-│  backend/kitchen_sop/sop_parser.py       ──  提取工具调用步骤   │
-│  backend/kitchen_sop/script_runner.py    ──  执行 pre/post 脚本│
-│  backend/kitchen_sop/reference_loader.py ──  加载参考文档      │
-│  backend/kitchen_sop/template_engine.py  ──  模板渲染          │
-└─────────────────────────────────────────────────────────────┘
-                              ↓ 调用
-┌─────────────────────────────────────────────────────────────┐
-│                  执行引擎层（6 种模式 + 共享基类）               │
-│  base.py              ──  SkillExecutorContext + 通用工具封装  │
-│  demo.py              ──  顺序执行（无需 API Key）              │
-│  agent.py             ──  LLM 自主决策                          │
-│  plan_then_execute.py ──  计划-执行分离                         │
-│  hitl.py              ──  人在回路（Human-in-the-Loop）         │
-│  parallel.py          ──  DAG 拓扑并行执行                      │
-│  resumable.py         ──  检查点 + 自动断电续作                  │
-│  resume.py            ──  从检查点恢复执行                      │
-│  rollback.py          ──  回滚到指定步骤重试                    │
-└─────────────────────────────────────────────────────────────┘
-                              ↓ JSON-RPC (stdio)
-┌─────────────────────────────────────────────────────────────┐
-│                      MCP 工具层（执行）                        │
-│  backend/mcp_server.py  ──  cut_ingredient / stir_fry ...    │
-└─────────────────────────────────────────────────────────────┘
-                              ↓ 构建产物
-┌─────────────────────────────────────────────────────────────┐
-│                     Web UI 可视化层                            │
-│  frontend/src/               ──  Vite + TypeScript 前端        │
-│  frontend/public/skills_data.json ──  Skill 数据（自动生成）   │
-│  scripts/build_skills_json.py     ──  构建脚本                │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                          Frontend (Browser)                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────┐ │
+│  │ Skill List  │  │ Execution    │  │ Cytoscape    │  │ Run       │ │
+│  │ (Sidebar)   │  │ Control Bar  │  │ Flow Graph   │  │ History   │ │
+│  └─────────────┘  └──────────────┘  └──────────────┘  └───────────┘ │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────────────┐│
+│  │ Markdown     │  │ Real-time    │  │ HITL Modal / Agent Thinking ││
+│  │ SOP Panel    │  │ Log Panel    │  │                             ││
+│  └──────────────┘  └──────────────┘  └─────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────┘
+                              │ REST / WebSocket
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     FastAPI Backend (Uvicorn)                        │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────────────┐│
+│  │ REST Router │  │ WebSocket    │  │ Execution Manager            ││
+│  │ /api/*      │  │ /ws/run/:id  │  │ (asyncio.Task per run)       ││
+│  └─────────────┘  └──────────────┘  └──────────────────────────────┘│
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────────────┐│
+│  │ HITL Bridge │  │ MCP Pool     │  │ Web Execution Adapter        ││
+│  │ (asyncio.   │  │ (singleton   │  │ (wraps RunTracker +          ││
+│  │  Future)    │  │  per app)    │  │  broadcasts WS events)       ││
+│  └─────────────┘  └──────────────┘  └──────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Existing Backend Modules                         │
+│  SkillsManager │ RunTracker │ Executors │ MCP Client │ Checkpoints  │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 | 层级 | 职责 | 类比 |
@@ -59,7 +48,8 @@
 | **Skill Manager / Parser** | 加载、解析、管理多个 Skill | 菜谱架 |
 | **Executors** | 决定"怎么做"（顺序/LLM/并行/人在回路等） | 厨师大脑 |
 | **MCP Server** | 实际"动手做"（工具实现） | 厨房设备 |
-| **Web UI** | 可视化展示 Skill 内容与流程 | 电子菜谱屏 |
+| **FastAPI Backend** | 统一 API 网关与执行管理 | 餐厅后厨调度台 |
+| **Web UI** | 交互式控制面板：启动执行、实时高亮、HITL、日志 | 智能料理机屏幕 |
 
 ---
 
@@ -72,7 +62,7 @@ cd backend
 pip install -r requirements.txt
 ```
 
-依赖包括：`langchain`、`mcp`、`python-dotenv`、`pyyaml` 等。
+依赖包括：`langchain`、`mcp`、`python-dotenv`、`pyyaml`、`fastapi`、`uvicorn` 等。
 
 ### 2. 安装前端依赖
 
@@ -81,7 +71,7 @@ cd frontend
 npm install
 ```
 
-### 3. 配置环境变量（可选，仅 Agent 模式需要）
+### 3. 配置环境变量（可选，仅 Agent / Plan-then-Execute 模式需要）
 
 ```bash
 cp .env.example .env
@@ -99,109 +89,84 @@ OPENAI_API_KEY=sk-xxxxxxxx
 
 ## 快速开始
 
-### Demo 模式（推荐首次体验）
-
-无需 API Key，直接按 SOP 步骤顺序调用工具：
+### 启动后端 API 服务器
 
 ```bash
-# 番茄炒蛋（8 步）
-python backend/main.py --demo --skill tomato_egg
-
-# 宫保鸡丁（10 步，流程更复杂）
-python backend/main.py --demo --skill kung_pao_chicken
-
-# 可乐鸡翅（7 步）
-python backend/main.py --demo --skill cola_chicken_wings
+cd backend
+python api_server.py
 ```
 
-### 传入变量覆盖默认值
+后端启动在 `http://localhost:8000`，提供 REST API 与 WebSocket：
+- `GET /api/health` — 健康检查
+- `GET /api/skills` — 列出所有 Skills
+- `POST /api/runs` — 启动新执行
+- `WS /ws/run/{run_id}` — 实时执行事件流
 
-Skill 支持在 frontmatter 中定义变量，执行时通过 `--var` 传入：
-
-```bash
-# 番茄炒蛋用 5 个鸡蛋（默认 3 个）
-python backend/main.py --demo --skill tomato_egg --var egg_count=5
-```
-
-### Agent 模式（需要 LLM）
-
-让大模型根据 SOP 自主决策调用工具：
-
-```bash
-# 使用默认模型（gpt-4o-mini）
-python backend/main.py --agent --skill tomato_egg
-
-# 指定模型
-python backend/main.py --agent --skill kung_pao_chicken --model gpt-4o
-```
-
-> 如果没有配置 `OPENAI_API_KEY`，会自动回退到 Demo 模式。
-
-### Plan-then-Execute 模式（需要 LLM）
-
-先由 LLM 生成结构化执行计划，再严格按计划顺序执行，执行阶段不依赖 LLM：
-
-```bash
-python backend/main.py --plan-then-execute --skill tomato_egg
-```
-
-### Human-in-the-Loop 模式
-
-在关键步骤执行前暂停，等待人工确认（支持确认/拒绝/修改参数）：
-
-```bash
-python backend/main.py --hitl --skill tomato_egg
-```
-
-> 需要在 `SKILL.md` 的 frontmatter 中配置 `human_in_the_loop` 规则。
-
-### 并行执行模式
-
-解析 SOP 中的 `[parallel-group]` 和 `[depends-on]` 标记，将无依赖步骤分组并行执行：
-
-```bash
-python backend/main.py --parallel --skill tomato_egg
-```
-
-### 断电续作 / 回滚
-
-使用 `--resumable` 执行时自动保存检查点，支持从断点恢复或回滚到指定步骤重试：
-
-```bash
-# 带检查点的顺序执行
-python backend/main.py --resumable --skill tomato_egg
-
-# 从断点恢复（继续执行未完成的步骤）
-python backend/main.py --resume <run_id>
-
-# 回滚到步骤 3 重新执行
-python backend/main.py --rollback <run_id> --to-step 3
-```
-
-### Web UI 可视化
-
-启动前端开发服务器，在浏览器中查看 Skill 列表、SOP 内容与流程图：
+### 启动前端开发服务器
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-打开 http://localhost:5173/，左侧选择 Skill，右侧查看 Markdown 内容与步骤流程图。
+打开 http://localhost:5173/，左侧选择 Skill，使用顶部控制栏选择执行模式并点击 **Run**，即可在浏览器中实时观察步骤高亮、日志输出和 HITL 弹窗。
 
-> `npm run dev` 会自动调用 `scripts/build_skills_json.py` 生成最新数据。
+> `npm run dev` 会自动调用 `scripts/build_skills_json.py` 生成最新数据，Vite proxy 会将 `/api` 和 `/ws` 转发到后端的 8000 端口。
 
-### 查看执行历史与回放
+### CLI 模式（向后兼容）
 
-每次执行会自动记录到 `runs/` 目录：
+所有原有 CLI 命令保持不变：
 
 ```bash
-# 列出最近 20 次执行
-python backend/main.py --list-runs
+# Demo 模式（无需 API Key）
+python backend/main.py --demo --skill tomato_egg
 
-# 回放某次执行（不调用真实工具）
-python backend/main.py --replay abc123
+# Agent 模式（需要 LLM）
+python backend/main.py --agent --skill tomato_egg
+
+# Plan-then-Execute
+python backend/main.py --plan-then-execute --skill tomato_egg
+
+# HITL 模式
+python backend/main.py --hitl --skill tomato_egg
+
+# 并行执行
+python backend/main.py --parallel --skill tomato_egg
+
+# 断电续作 / 回滚
+python backend/main.py --resumable --skill tomato_egg
+python backend/main.py --resume <run_id>
+python backend/main.py --rollback <run_id> --to-step 3
+
+# 查看历史
+python backend/main.py --list-runs
+python backend/main.py --replay <run_id>
 ```
+
+> 如果没有配置 `OPENAI_API_KEY`，Agent / Plan-then-Execute 会自动回退到 Demo 模式。
+
+---
+
+## Web UI 功能说明
+
+前端基于 **Vue 3 + Pinia + Vite + TypeScript + Cytoscape.js**，提供完整的交互式执行控制面板：
+
+| 区域 | 功能 |
+|---|---|
+| **左侧边栏** | Skill 列表，显示名称、描述、步骤数 |
+| **执行控制栏** | 模式选择（Demo/Agent/Parallel/HITL 等）、变量表单、Run 按钮、WS 连接状态 |
+| **Markdown 面板** | 渲染选中 Skill 的完整 SOP 内容 |
+| **流程图面板** | Cytoscape 有向图展示步骤执行顺序，支持顺序/DAG/网格/环形布局切换 |
+| **实时日志** | 结构化的步骤执行日志（开始/完成/错误） |
+| **Agent Thinking** | 可折叠面板，展示 Agent 模式的工具选择与推理过程 |
+| **HITL 弹窗** | 人在回路模式下弹出确认对话框，支持 Approve / Reject |
+| **右侧历史** | 最近执行记录列表，点击查看详情 |
+
+**流程图实时高亮**：
+- 🔵 蓝色脉冲 — 步骤执行中 (`node-running`)
+- 🟢 绿色 — 步骤成功 (`node-success`)
+- 🔴 红色 — 步骤失败 (`node-error`)
+- 🟣 紫色 — Parallel 模式当前批次 (`batch-active`)
 
 ---
 
@@ -222,12 +187,13 @@ python backend/main.py --replay abc123
 ```
 .
 ├── backend/                         # Python 后端
-│   ├── main.py                      # 命令行入口（委托 cli / commands / router）
+│   ├── api_server.py                # FastAPI Uvicorn 入口
+│   ├── main.py                      # CLI 命令行入口
 │   ├── cli.py                       # 参数解析器（argparse）
 │   ├── commands.py                  # 查询类命令（--list-runs / --replay）
-│   ├── router.py                    # 执行路由（模式解析 + executor 分发）
+│   ├── router.py                    # CLI 执行路由（模式解析 + executor 分发）
 │   ├── mcp_server.py                # MCP 厨房工具服务器（独立进程）
-│   ├── requirements.txt             # Python 依赖
+│   ├── requirements.txt             # Python 依赖（含 fastapi / uvicorn）
 │   └── kitchen_sop/                 # 核心包
 │       ├── __init__.py
 │       ├── config.py                # 环境变量加载、项目根目录常量
@@ -237,38 +203,66 @@ python backend/main.py --replay abc123
 │       ├── template_engine.py       # 变量模板渲染（{{var}} 替换）
 │       ├── script_runner.py         # Skill 脚本执行引擎（pre/post hooks）
 │       ├── reference_loader.py      # 参考资料加载与格式化
-│       ├── mcp_client.py            # MCP 客户端连接管理
+│       ├── mcp_client.py            # MCP 客户端连接管理（CLI 兼容）
+│       ├── mcp_pool.py              # MCP 单例连接池（Web 并发共享）
+│       ├── hitl_bridge.py           # HITL 异步信号桥（Web 模式）
+│       ├── checkpoint.py            # 检查点管理器（CheckpointManager）
 │       ├── tracker/                 # 执行观测与审计
 │       │   ├── __init__.py
 │       │   ├── models.py            # RunRecord / StepRecord / ExecutionPlan / Checkpoint 数据模型
 │       │   └── core.py              # RunTracker 上下文管理器与持久化
-│       ├── checkpoint.py            # 检查点管理器（CheckpointManager）
-│       └── executors/               # 执行器（共享基类 + 6 种模式）
+│       ├── executors/               # 执行器（共享基类 + 6 种模式）
+│       │   ├── __init__.py
+│       │   ├── base.py              # SkillExecutorContext + execute_step 通用封装
+│       │   ├── demo.py              # Demo 模式：按 SOP 顺序执行
+│       │   ├── agent.py             # Agent 模式：LangChain + LLM 自主决策
+│       │   ├── plan_then_execute.py # Plan-then-Execute：计划-执行分离
+│       │   ├── hitl.py              # Human-in-the-Loop：人在回路
+│       │   ├── parallel.py          # Parallel：DAG 拓扑并行执行
+│       │   ├── resumable.py         # Resumable：检查点 + 自动断电续作
+│       │   ├── resume.py            # Resume：从检查点恢复执行
+│       │   ├── rollback.py          # Rollback：回滚到指定步骤重试
+│       │   └── web_adapter.py       # WebExecutionAdapter 包装器
+│       └── api/                     # FastAPI Web 层
 │           ├── __init__.py
-│           ├── base.py              # SkillExecutorContext + execute_step 通用封装
-│           ├── demo.py              # Demo 模式：按 SOP 顺序执行
-│           ├── agent.py             # Agent 模式：LangChain + LLM 自主决策
-│           ├── plan_then_execute.py # Plan-then-Execute：计划-执行分离
-│           ├── hitl.py              # Human-in-the-Loop：人在回路
-│           ├── parallel.py          # Parallel：DAG 拓扑并行执行
-│           ├── resumable.py         # Resumable：检查点 + 自动断电续作
-│           ├── resume.py            # Resume：从检查点恢复执行
-│           └── rollback.py          # Rollback：回滚到指定步骤重试
+│           ├── main.py              # FastAPI App（lifespan、CORS、router 挂载）
+│           ├── routes.py            # REST API 路由实现
+│           ├── ws.py                # WebSocket 连接管理与广播
+│           ├── schemas.py           # Pydantic 请求/响应模型
+│           └── execution_manager.py # ActiveRun 管理与 start_run()
 │
-├── frontend/                        # Vite + TypeScript 前端
+├── frontend/                        # Vue 3 + Pinia + Vite 前端
 │   ├── index.html
 │   ├── package.json
-│   ├── vite.config.ts
+│   ├── vite.config.ts               # 含 dev proxy（/api → localhost:8000）
 │   ├── tsconfig.json
 │   ├── src/
-│   │   ├── main.ts                  # 入口
-│   │   ├── app.ts                   # 应用逻辑（Skill 列表、Markdown 渲染）
-│   │   ├── graph.ts                 # Cytoscape 流程图主函数
-│   │   ├── graph-styles.ts          # Cytoscape 样式配置（节点颜色、边样式）
-│   │   ├── graph-events.ts          # Cytoscape 事件绑定（hover、点击、resize）
-│   │   ├── parser.ts                # Markdown / frontmatter 解析器
+│   │   ├── main.ts                  # Vue 3 入口（createApp + Pinia）
+│   │   ├── App.vue                  # 根布局组件
 │   │   ├── types.ts                 # 类型定义
-│   │   └── style.css                # 样式
+│   │   ├── stores/                  # Pinia 状态管理
+│   │   │   ├── app.ts               # Skill 选择与详情状态
+│   │   │   └── run.ts               # 执行状态、日志、HITL、Agent 推理
+│   │   ├── composables/             # 可复用逻辑
+│   │   │   ├── useApi.ts            # REST API 封装
+│   │   │   ├── useWebSocket.ts      # WebSocket 连接管理（自动重连）
+│   │   │   ├── useCytoscape.ts      # Cytoscape 实例生命周期管理
+│   │   │   └── useExecution.ts      # 执行控制逻辑（启动、HITL 响应）
+│   │   ├── components/              # Vue SFC 组件
+│   │   │   ├── SkillList.vue        # 左侧 Skill 列表
+│   │   │   ├── SkillDetail.vue      # Markdown SOP 展示
+│   │   │   ├── ExecutionPanel.vue   # 执行控制栏（模式、变量、Run）
+│   │   │   ├── VariableForm.vue     # 动态变量输入表单
+│   │   │   ├── GraphViewer.vue      # Cytoscape 流程图（布局切换 + 实时高亮）
+│   │   │   ├── LogViewer.vue        # 实时执行日志
+│   │   │   ├── HitlModal.vue        # HITL 确认弹窗
+│   │   │   ├── RunHistory.vue       # 执行历史列表
+│   │   │   ├── AgentThinking.vue    # Agent 推理过程面板（可折叠）
+│   │   │   └── RunReplay.vue        # 历史回放控制
+│   │   └── graph/                   # 图渲染工具函数
+│   │       ├── render.ts            # Cytoscape 初始化与事件绑定
+│   │       ├── styles.ts            # 节点/边样式配置（含执行状态样式）
+│   │       └── dag-layout.ts        # DAG 边构建逻辑（Parallel 模式）
 │   └── public/
 │       └── skills_data.json         # 构建产物：Skill 数据（自动生成）
 │
@@ -276,7 +270,7 @@ python backend/main.py --replay abc123
 │   └── build_skills_json.py         # 构建脚本：skills/ → frontend/public/skills_data.json
 │
 ├── skills/                          # Skill 目录（每个 Skill 一个子目录）
-│   ├── tomato_egg/                  # 番茄炒蛋（带变量 + scripts + reference）
+│   ├── tomato_egg/                  # 番茄炒蛋（带变量 + scripts + reference + parallel-group）
 │   │   ├── SKILL.md
 │   │   ├── scripts/
 │   │   │   └── pre_check.py
@@ -455,34 +449,38 @@ templates:
 
 ---
 
-## Web UI 说明
+## Backend API 设计
 
-前端基于 **Vite + TypeScript + Cytoscape.js**，提供 Skill 的可视化浏览：
+### REST Endpoints
 
-| 区域 | 功能 |
-|---|---|
-| 左侧边栏 | Skill 列表，显示名称、描述、步骤数与工具数 |
-| Markdown 面板 | 渲染选中 Skill 的完整 SOP 内容（食材、步骤、成功标准） |
-| 流程图面板 | 用有向图展示步骤执行顺序，节点按工具类型着色 |
+| Method | Path | 描述 |
+|--------|------|------|
+| GET | `/api/health` | 健康检查 |
+| GET | `/api/skills` | 列出所有 Skills |
+| GET | `/api/skills/{skill_name}` | 获取单个 Skill 详情 |
+| POST | `/api/runs` | 启动新执行 |
+| GET | `/api/runs` | 列出最近执行记录 |
+| GET | `/api/runs/{run_id}` | 获取单次执行详情 |
+| POST | `/api/runs/{run_id}/resume` | 从检查点恢复 |
+| POST | `/api/runs/{run_id}/rollback` | 回滚到指定步骤 |
+| POST | `/api/runs/{run_id}/approve` | HITL 人工确认 |
+| GET | `/api/runs/{run_id}/checkpoints` | 获取检查点列表 |
 
-**节点颜色说明**：
-- 🟥 切配 (`cut_ingredient`)
-- 🟧 打蛋 (`crack_egg`)
-- 🟨 热锅 (`heat_pan`)
-- 🟩 炒制 (`stir_fry`)
-- 🟦 调味 (`season`)
-- 🟪 装盘 (`plate`)
-- 🟫 子流程 (`marinate_meat` 等)
+### WebSocket 消息类型
 
-**构建流程**：
-```bash
-# 手动生成数据
-python scripts/build_skills_json.py
+**Server → Client**：
+- `init` — 连接初始化
+- `step_start` / `step_finish` / `step_error` — 步骤状态变更
+- `hitl_request` — 暂停等待人工确认
+- `plan_generated` — 计划已生成
+- `batch_start` / `batch_finish` — Parallel 批次事件
+- `agent_thought` — Agent 推理过程
+- `checkpoint_saved` — 检查点已保存
+- `run_complete` — 执行完成
 
-# 或在前端目录下自动构建并启动
-cd frontend
-npm run dev    # 会自动执行 build:skills
-```
+**Client → Server**：
+- `hitl_approval` — 发送 HITL 审批决定
+- `ping` — 心跳
 
 ---
 
@@ -510,21 +508,18 @@ npm run dev    # 会自动执行 build:skills
 | agent 侧 | ✅ stdout | `logs/YYYY-MM-DD.log` | 执行流程、步骤、结果 |
 | MCP 服务端 | ✅ stderr | `logs/mcp_server_YYYY-MM-DD.log` | 工具调用参数、返回值 |
 
-日志格式统一：
-```
-2026-06-04 16:53:35 | INFO     | kitchen_agent | 🍳 Demo 模式: 按 SOP 顺序执行
-2026-06-04 16:53:36 | INFO     | mcp_server    | [TOOL CALL] cut_ingredient | args={...}
-```
+---
 
 ## 执行观测与审计
 
 每次执行会自动生成结构化记录，保存到 `runs/<run_id>.json`：
 
 ```bash
-# 列出最近 20 次执行
-python backend/main.py --list-runs
+# 通过 API 查看
+python -c "import requests; print(requests.get('http://localhost:8000/api/runs').json())"
 
-# 回放某次执行（不调用真实工具，仅查看记录）
+# 或通过 CLI
+python backend/main.py --list-runs
 python backend/main.py --replay 59a3423e5165
 ```
 
@@ -538,13 +533,10 @@ python backend/main.py --replay 59a3423e5165
 Resumable 模式会在每步执行前后自动保存检查点到 `runs/checkpoints/<run_id>_<cp_id>.json`：
 
 ```bash
-# 带检查点的顺序执行
+# Web UI 中点击 Run 选择 Resumable 模式即可
+# 或通过 CLI
 python backend/main.py --resumable --skill tomato_egg
-
-# 执行中断后，从最新检查点恢复
 python backend/main.py --resume <run_id>
-
-# 回滚到某一步重新执行（创建新 run，保留原记录）
 python backend/main.py --rollback <run_id> --to-step 3
 ```
 
@@ -559,7 +551,7 @@ python backend/main.py --rollback <run_id> --to-step 3
 3. 按需添加 `scripts/`、`reference/`、`templates/` 子目录
 4. 确保引用的工具名在 `backend/mcp_server.py` 中存在
 5. 运行测试：`python backend/main.py --demo --skill mapo_tofu`
-6. 刷新前端页面即可看到新 Skill 的流程图
+6. 刷新前端页面即可看到新 Skill 的流程图并执行
 
 **核心原则**：Skill 只定义"做什么"和"参数是什么"，不定义工具怎么实现。工具实现由 MCP Server 负责。
 
@@ -569,8 +561,8 @@ python backend/main.py --rollback <run_id> --to-step 3
 
 | 领域 | 技术 |
 |---|---|
-| 后端 | Python, LangChain, MCP (Model Context Protocol), PyYAML |
-| 前端 | Vite, TypeScript, Cytoscape.js, Marked |
+| 后端 | Python, LangChain, MCP (Model Context Protocol), FastAPI, Uvicorn, PyYAML |
+| 前端 | Vue 3, Pinia, Vite, TypeScript, Cytoscape.js, Marked |
 | 配置 | python-dotenv |
 
 ---

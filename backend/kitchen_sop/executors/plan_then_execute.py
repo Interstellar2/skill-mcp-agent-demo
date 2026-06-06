@@ -3,15 +3,18 @@
 import json
 import logging
 import os
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from langchain_openai import ChatOpenAI
 
 from ..mcp_client import get_mcp_tools
+from ..mcp_pool import MCPConnectionPool
 from ..tracker import RunTracker
 from .base import SkillExecutorContext, execute_step, log_step_call, log_step_result, log_step_error
 
 logger = logging.getLogger("kitchen_agent")
+
+EventBroadcaster = Optional[Callable[[str, dict], Awaitable[None]]]
 
 PLAN_PROMPT = """你是一位严谨的中餐厨师规划师。请根据以下SOP，制定一个详细的执行计划。
 
@@ -58,12 +61,9 @@ async def _generate_plan(
     response = await llm.ainvoke(messages)
     content = response.content if hasattr(response, "content") else str(response)
 
-    # 提取 JSON
     try:
-        # 尝试直接解析
         plan_data = json.loads(content)
     except json.JSONDecodeError:
-        # 尝试从 markdown 代码块中提取
         import re
         match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
         if match:
@@ -91,6 +91,9 @@ async def run_plan_then_execute_mode(
     skills_dir=None,
     model: Optional[str] = None,
     variables: Optional[dict] = None,
+    tracker: Optional[RunTracker] = None,
+    event_broadcaster: EventBroadcaster = None,
+    mcp_pool: Optional[MCPConnectionPool] = None,
 ):
     """Plan-then-Execute 模式：
     Phase 1 - LLM 生成结构化执行计划；
@@ -114,17 +117,19 @@ async def run_plan_then_execute_mode(
         logger.info(f"   Skill: {skill_name}")
         logger.info("=" * 60)
 
-        async with get_mcp_tools() as (tools, session):
+        async def _execute(session):
             tools_desc = "\n".join(
-                f"- {t.name}: {t.description}" for t in tools
-            )
+                f"- {t.name}: {t.description}" for t in (mcp_pool.tools if mcp_pool else [])
+            ) if mcp_pool else ""
+            if not tools_desc:
+                # fallback if using get_mcp_tools
+                tools_desc = "工具列表未预加载"
 
             llm_kwargs = {"model": model, "temperature": 0, "api_key": api_key}
             if base_url:
                 llm_kwargs["base_url"] = base_url
             llm = ChatOpenAI(**llm_kwargs)
 
-            # ========== Phase 1: 生成计划 ==========
             logger.info("🧠 Phase 1: 生成执行计划...")
             try:
                 plan_steps = await _generate_plan(llm, ctx.rendered_sop, tools_desc, ctx.reference_text)
@@ -132,35 +137,63 @@ async def run_plan_then_execute_mode(
                 logger.error(f"计划生成失败: {e}")
                 return
 
-            # ========== Phase 2: 执行计划 ==========
+            if event_broadcaster:
+                await event_broadcaster(
+                    "plan_generated",
+                    {
+                        "steps": plan_steps,
+                        "estimated_duration_ms": 60000,
+                    },
+                )
+
             logger.info("=" * 60)
             logger.info("🔨 Phase 2: 按序执行计划...")
             logger.info("=" * 60)
 
-            async with RunTracker(
-                skill_name, mode="plan_then_execute", variables=ctx.merged_vars
-            ) as tracker:
-                logger.info(f"   Run ID: {tracker.record.run_id}")
+            t = tracker or RunTracker(skill_name, mode="plan_then_execute", variables=ctx.merged_vars)
+            if tracker is None:
+                async with t:
+                    await _run_plan(t, session, plan_steps, event_broadcaster)
+            else:
+                await _run_plan(t, session, plan_steps, event_broadcaster)
 
-                for step_data in plan_steps:
-                    idx = step_data.get("step_index", 0)
-                    tool_name = step_data["tool_name"]
-                    arguments = step_data.get("arguments", {})
-                    reasoning = step_data.get("reasoning", "")
+        if mcp_pool is not None:
+            await _execute(mcp_pool.session)
+        else:
+            async with get_mcp_tools() as (tools, session):
+                await _execute(session)
 
-                    step_rec = tracker.start_step(idx, tool_name, arguments)
-                    log_step_call(idx, tool_name, arguments)
-                    if reasoning:
-                        logger.info(f"   理由: {reasoning}")
 
-                    try:
-                        text = await execute_step(session, tracker, step_rec, tool_name, arguments)
-                        log_step_result(text)
-                    except Exception as e:
-                        log_step_error(e)
-                        logger.info("计划执行中断，后续步骤已跳过")
-                        break
+async def _run_plan(
+    tracker: RunTracker,
+    session,
+    plan_steps: list,
+    event_broadcaster: EventBroadcaster,
+):
+    logger.info(f"   Run ID: {tracker.record.run_id}")
 
-                logger.info("=" * 60)
-                logger.info(f"🎉 计划执行完毕！{skill_name} 已完成~")
-                logger.info("=" * 60)
+    for step_data in plan_steps:
+        idx = step_data.get("step_index", 0)
+        tool_name = step_data["tool_name"]
+        arguments = step_data.get("arguments", {})
+        reasoning = step_data.get("reasoning", "")
+
+        step_rec = tracker.start_step(idx, tool_name, arguments)
+        log_step_call(idx, tool_name, arguments)
+        if reasoning:
+            logger.info(f"   理由: {reasoning}")
+
+        try:
+            text = await execute_step(
+                session, tracker, step_rec, tool_name, arguments,
+                event_broadcaster=event_broadcaster,
+            )
+            log_step_result(text)
+        except Exception as e:
+            log_step_error(e)
+            logger.info("计划执行中断，后续步骤已跳过")
+            break
+
+    logger.info("=" * 60)
+    logger.info(f"🎉 计划执行完毕！{tracker.record.skill_name} 已完成~")
+    logger.info("=" * 60)

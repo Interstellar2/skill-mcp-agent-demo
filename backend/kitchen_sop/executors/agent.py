@@ -2,16 +2,60 @@
 
 import logging
 import os
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
+from langchain_core.callbacks import AsyncCallbackHandler
 
 from ..mcp_client import get_mcp_tools
+from ..mcp_pool import MCPConnectionPool
 from ..tracker import RunTracker
 from .base import SkillExecutorContext
 
 logger = logging.getLogger("kitchen_agent")
+
+EventBroadcaster = Optional[Callable[[str, dict], Awaitable[None]]]
+
+
+class AgentThoughtCallback(AsyncCallbackHandler):
+    """拦截 Agent 推理过程并通过 event_broadcaster 广播."""
+
+    def __init__(self, event_broadcaster: EventBroadcaster):
+        self.event_broadcaster = event_broadcaster
+
+    async def on_agent_action(self, action, **kwargs):
+        if self.event_broadcaster:
+            await self.event_broadcaster(
+                "agent_thought",
+                {
+                    "type": "action",
+                    "tool": getattr(action, "tool", None),
+                    "tool_input": getattr(action, "tool_input", None),
+                    "log": getattr(action, "log", None),
+                },
+            )
+
+    async def on_tool_start(self, serialized, input_str, **kwargs):
+        if self.event_broadcaster:
+            await self.event_broadcaster(
+                "agent_thought",
+                {
+                    "type": "tool_start",
+                    "tool": serialized.get("name") if serialized else None,
+                    "input": input_str,
+                },
+            )
+
+    async def on_tool_end(self, output, **kwargs):
+        if self.event_broadcaster:
+            await self.event_broadcaster(
+                "agent_thought",
+                {
+                    "type": "tool_end",
+                    "output": str(output) if output else None,
+                },
+            )
 
 
 async def run_agent_mode(
@@ -20,11 +64,11 @@ async def run_agent_mode(
     model: Optional[str] = None,
     query: str = "请按照 SOP 制作番茄炒鸡蛋",
     variables: Optional[dict] = None,
+    tracker: Optional[RunTracker] = None,
+    event_broadcaster: EventBroadcaster = None,
+    mcp_pool: Optional[MCPConnectionPool] = None,
 ):
-    """Agent 模式: 使用 LangChain + LLM，让大模型根据 SOP 自主决策调用工具.
-
-    配置来源优先级: 函数参数 > .env / 环境变量 > 默认值.
-    """
+    """Agent 模式: 使用 LangChain + LLM，让大模型根据 SOP 自主决策调用工具."""
     api_key = os.environ.get("OPENAI_API_KEY")
     base_url = os.environ.get("OPENAI_BASE_URL")
     model = model or os.environ.get("MODEL", "gpt-4o-mini")
@@ -45,7 +89,7 @@ async def run_agent_mode(
         logger.info(f"   Skill: {skill_name}")
         logger.info("=" * 60)
 
-        async with get_mcp_tools() as (tools, session):
+        async def _execute(session, tools):
             logger.info(f"🔧 已加载 {len(tools)} 个 MCP 工具:")
             for t in tools:
                 logger.info(f"   - {t.name}: {t.description[:50]}...")
@@ -71,51 +115,105 @@ async def run_agent_mode(
 5. 完成后向用户汇报成果。
 """
 
-            async with RunTracker(
+            t = tracker or RunTracker(
                 skill_name, mode="agent", variables=ctx.merged_vars
-            ) as tracker:
-                logger.info(f"   Run ID: {tracker.record.run_id}")
+            )
+            if tracker is None:
+                async with t:
+                    await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster)
+            else:
+                await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster)
 
-                # Monkey-patch session.call_tool 以记录每一次工具调用
-                original_call_tool = session.call_tool
+        if mcp_pool is not None:
+            await _execute(mcp_pool.session, mcp_pool.tools)
+        else:
+            async with get_mcp_tools() as (tools, session):
+                await _execute(session, tools)
 
-                async def tracked_call_tool(tool_name, arguments):
-                    step_rec = tracker.start_step(
-                        len(tracker.record.steps) + 1, tool_name, arguments
-                    )
-                    try:
-                        result = await original_call_tool(tool_name, arguments=arguments)
-                        text = None
-                        if result.content:
-                            text = (
-                                result.content[0].text
-                                if hasattr(result.content[0], "text")
-                                else str(result.content[0])
-                            )
-                        tracker.finish_step(step_rec, result_text=text)
-                        return result
-                    except Exception as e:
-                        tracker.fail_step(step_rec, error_message=str(e))
-                        raise
 
-                session.call_tool = tracked_call_tool
+async def _run_agent(
+    tracker: RunTracker,
+    session,
+    tools,
+    llm,
+    system_prompt: str,
+    query: str,
+    event_broadcaster: EventBroadcaster,
+):
+    logger.info(f"   Run ID: {tracker.record.run_id}")
 
-                agent = create_agent(
-                    model=llm,
-                    tools=tools,
-                    system_prompt=system_prompt,
+    original_call_tool = session.call_tool
+
+    async def tracked_call_tool(tool_name, arguments):
+        step_rec = tracker.start_step(
+            len(tracker.record.steps) + 1, tool_name, arguments
+        )
+        if event_broadcaster:
+            await event_broadcaster(
+                "step_start",
+                {
+                    "step_index": step_rec.step_index,
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                },
+            )
+        try:
+            result = await original_call_tool(tool_name, arguments=arguments)
+            text = None
+            if result.content:
+                text = (
+                    result.content[0].text
+                    if hasattr(result.content[0], "text")
+                    else str(result.content[0])
                 )
+            tracker.finish_step(step_rec, result_text=text)
+            if event_broadcaster:
+                await event_broadcaster(
+                    "step_finish",
+                    {
+                        "step_index": step_rec.step_index,
+                        "tool_name": tool_name,
+                        "result_text": text,
+                    },
+                )
+            return result
+        except Exception as e:
+            tracker.fail_step(step_rec, error_message=str(e))
+            if event_broadcaster:
+                await event_broadcaster(
+                    "step_error",
+                    {
+                        "step_index": step_rec.step_index,
+                        "tool_name": tool_name,
+                        "error_message": str(e),
+                    },
+                )
+            raise
 
-                logger.info(f"🚀 开始执行: {query}")
-                result = await agent.ainvoke({"messages": [("user", query)]})
+    session.call_tool = tracked_call_tool
 
-                # 提取最后一条 AI 消息的内容
-                output = "(无输出)"
-                if result.get("messages"):
-                    last_msg = result["messages"][-1]
-                    output = getattr(last_msg, "content", str(last_msg))
+    callbacks = []
+    if event_broadcaster:
+        callbacks.append(AgentThoughtCallback(event_broadcaster))
 
-                logger.info("=" * 60)
-                logger.info("📋 Agent 最终回答:")
-                logger.info(output)
-                logger.info("=" * 60)
+    agent = create_agent(
+        model=llm,
+        tools=tools,
+        system_prompt=system_prompt,
+    )
+
+    logger.info(f"🚀 开始执行: {query}")
+    result = await agent.ainvoke(
+        {"messages": [("user", query)]},
+        config={"callbacks": callbacks} if callbacks else None,
+    )
+
+    output = "(无输出)"
+    if result.get("messages"):
+        last_msg = result["messages"][-1]
+        output = getattr(last_msg, "content", str(last_msg))
+
+    logger.info("=" * 60)
+    logger.info("📋 Agent 最终回答:")
+    logger.info(output)
+    logger.info("=" * 60)

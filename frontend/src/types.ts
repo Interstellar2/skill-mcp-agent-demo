@@ -17,3 +17,67 @@ export interface Skill {
   steps: SkillStep[];
   raw: string;
 }
+
+export interface APIStep {
+  step_index: number;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  status: string;
+  result_text?: string;
+  error_message?: string;
+  started_at?: string;
+  ended_at?: string;
+  duration_ms?: number;
+  parallel_group_id?: string;
+  checkpoint_id?: string;
+  human_approval?: Record<string, unknown>;
+}
+
+export interface APIRun {
+  run_id: string;
+  skill_name: string;
+  mode: string;
+  started_at: string;
+  ended_at?: string;
+  overall_status: string;
+  variables?: Record<string, unknown>;
+  steps: APIStep[];
+  resumed_from?: string;
+  rollback_to_step?: number;
+  execution_plan?: Record<string, unknown>;
+}
+
+export interface APISkillMeta {
+  name: string;
+  description: string;
+  variables: Record<string, unknown>;
+  steps_count: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface WSMessage {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface StartRunRequest {
+  skill_name: string;
+  mode: string;
+  variables?: Record<string, unknown>;
+  model?: string;
+}
+
+export interface AgentThought {
+  type: string;
+  tool?: string;
+  input?: unknown;
+  output?: string;
+  log?: string;
+  timestamp: number;
+}
+
+export interface ParallelBatch {
+  batch_index: number;
+  step_indices: number[];
+  total_batches: number;
+}

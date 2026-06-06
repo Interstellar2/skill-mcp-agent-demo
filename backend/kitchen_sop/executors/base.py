@@ -1,7 +1,7 @@
 """执行器共享基类与工具函数."""
 
 import logging
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from ..skill_manager import SkillsManager
 from ..sop_parser import parse_sop_steps
@@ -11,6 +11,8 @@ from ..reference_loader import ReferenceLoader
 from ..config import SKILLS_DIR
 
 logger = logging.getLogger("kitchen_agent")
+
+EventBroadcaster = Optional[Callable[[str, dict], Awaitable[None]]]
 
 
 class SkillExecutorContext:
@@ -119,7 +121,14 @@ class SkillExecutorContext:
         return False
 
 
-async def execute_step(session, tracker, step_rec, tool_name, arguments) -> Optional[str]:
+async def execute_step(
+    session,
+    tracker,
+    step_rec,
+    tool_name,
+    arguments,
+    event_broadcaster: EventBroadcaster = None,
+) -> Optional[str]:
     """调用 MCP 工具并更新 tracker.
 
     Returns:
@@ -128,7 +137,31 @@ async def execute_step(session, tracker, step_rec, tool_name, arguments) -> Opti
     Raises:
         Exception: 工具调用失败时抛出（tracker 已记录错误）。
     """
-    result = await session.call_tool(tool_name, arguments=arguments)
+    if event_broadcaster:
+        await event_broadcaster(
+            "step_start",
+            {
+                "step_index": step_rec.step_index,
+                "tool_name": tool_name,
+                "arguments": arguments,
+            },
+        )
+
+    try:
+        result = await session.call_tool(tool_name, arguments=arguments)
+    except Exception as e:
+        tracker.fail_step(step_rec, error_message=str(e))
+        if event_broadcaster:
+            await event_broadcaster(
+                "step_error",
+                {
+                    "step_index": step_rec.step_index,
+                    "tool_name": tool_name,
+                    "error_message": str(e),
+                },
+            )
+        raise
+
     text = None
     if result.content:
         text = (
@@ -137,6 +170,16 @@ async def execute_step(session, tracker, step_rec, tool_name, arguments) -> Opti
             else str(result.content[0])
         )
     tracker.finish_step(step_rec, result_text=text)
+
+    if event_broadcaster:
+        await event_broadcaster(
+            "step_finish",
+            {
+                "step_index": step_rec.step_index,
+                "tool_name": tool_name,
+                "result_text": text,
+            },
+        )
     return text
 
 

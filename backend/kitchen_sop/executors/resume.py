@@ -1,10 +1,11 @@
 """从检查点恢复执行."""
 
 import logging
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from ..checkpoint import CheckpointManager
 from ..mcp_client import get_mcp_tools
+from ..mcp_pool import MCPConnectionPool
 from ..sop_parser import parse_sop_steps
 from ..template_engine import render_sop
 from ..tracker import RunTracker
@@ -15,10 +16,15 @@ from .base import execute_step, log_step_call, log_step_result, log_step_error
 
 logger = logging.getLogger("kitchen_agent")
 
+EventBroadcaster = Optional[Callable[[str, dict], Awaitable[None]]]
+
 
 async def resume_run(
     run_id: str,
     skills_dir=None,
+    tracker: Optional[RunTracker] = None,
+    event_broadcaster: EventBroadcaster = None,
+    mcp_pool: Optional[MCPConnectionPool] = None,
 ):
     """从某个 run 的最新检查点恢复执行.
 
@@ -54,9 +60,6 @@ async def resume_run(
         logger.warning("未从 SOP 中解析出任何工具调用步骤")
         return
 
-    # 确定从哪一步继续
-    # checkpoint 的 step_status 如果是 "after_step"，说明 step_index 已完成，从下一步开始
-    # 如果是 "before_step" 或 "error"，从当前 step_index 开始
     if cp.step_status == "after_step":
         resume_from = cp.step_index + 1
     else:
@@ -73,35 +76,56 @@ async def resume_run(
     logger.info(f"   将从步骤 {resume_from} 继续执行")
     logger.info("=" * 60)
 
-    async with get_mcp_tools() as (tools, session):
-        async with RunTracker(
-            skill_name, mode="resume", variables=variables
-        ) as tracker:
+    async def _execute(session):
+        t = tracker or RunTracker(skill_name, mode="resume", variables=variables)
+        if tracker is None:
+            async with t:
+                t.record.resumed_from = run_id
+                await _run_resume(t, session, steps, resume_from, cp, event_broadcaster)
+        else:
             tracker.record.resumed_from = run_id
-            logger.info(f"   新 Run ID: {tracker.record.run_id}")
+            await _run_resume(tracker, session, steps, resume_from, cp, event_broadcaster)
 
-            # 恢复之前的步骤记录到新的 run（用于完整记录）
-            # 只复制已完成的步骤
-            for sr_dict in cp.step_results:
-                if sr_dict["step_index"] < resume_from and sr_dict["status"] == "success":
-                    old_step = StepRecord.from_dict(sr_dict)
-                    tracker.record.steps.append(old_step)
+    if mcp_pool is not None:
+        await _execute(mcp_pool.session)
+    else:
+        async with get_mcp_tools() as (tools, session):
+            await _execute(session)
 
-            for idx in range(resume_from, len(steps) + 1):
-                step = steps[idx - 1]
-                tool_name = step["tool_name"]
-                arguments = step["arguments"]
 
-                step_rec = tracker.start_step(idx, tool_name, arguments)
-                log_step_call(idx, tool_name, arguments)
+async def _run_resume(
+    tracker: RunTracker,
+    session,
+    steps: list,
+    resume_from: int,
+    cp,
+    event_broadcaster: EventBroadcaster,
+):
+    logger.info(f"   新 Run ID: {tracker.record.run_id}")
 
-                try:
-                    text = await execute_step(session, tracker, step_rec, tool_name, arguments)
-                    log_step_result(text)
-                except Exception as e:
-                    log_step_error(e)
-                    break
+    for sr_dict in cp.step_results:
+        if sr_dict["step_index"] < resume_from and sr_dict["status"] == "success":
+            old_step = StepRecord.from_dict(sr_dict)
+            tracker.record.steps.append(old_step)
 
-            logger.info("=" * 60)
-            logger.info(f"🎉 恢复执行完毕！{skill_name} 已完成~")
-            logger.info("=" * 60)
+    for idx in range(resume_from, len(steps) + 1):
+        step = steps[idx - 1]
+        tool_name = step["tool_name"]
+        arguments = step["arguments"]
+
+        step_rec = tracker.start_step(idx, tool_name, arguments)
+        log_step_call(idx, tool_name, arguments)
+
+        try:
+            text = await execute_step(
+                session, tracker, step_rec, tool_name, arguments,
+                event_broadcaster=event_broadcaster,
+            )
+            log_step_result(text)
+        except Exception as e:
+            log_step_error(e)
+            break
+
+    logger.info("=" * 60)
+    logger.info(f"🎉 恢复执行完毕！{tracker.record.skill_name} 已完成~")
+    logger.info("=" * 60)
