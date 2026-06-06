@@ -85,3 +85,20 @@ class CheckpointOut(BaseModel):
 class WSMessage(BaseModel):
     type: str
     payload: Dict[str, Any] = {}
+
+
+class ToolOut(BaseModel):
+    name: str
+    description: str = ""
+    input_schema: Dict[str, Any] = Field(default_factory=dict, alias="inputSchema")
+
+
+class SkillValidationErrorItem(BaseModel):
+    step_index: Optional[int] = None
+    message: str
+
+
+class SkillValidationOut(BaseModel):
+    valid: bool
+    errors: List[str] = []
+    step_errors: List[SkillValidationErrorItem] = []

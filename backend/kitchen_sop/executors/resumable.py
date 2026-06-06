@@ -37,6 +37,7 @@ async def run_resumable_mode(
         logger.info("=" * 60)
 
         async def _execute(session):
+            await ctx.validate_steps(session)
             t = tracker or RunTracker(
                 skill_name, mode="resumable", variables=ctx.merged_vars, enable_checkpoint=True
             )

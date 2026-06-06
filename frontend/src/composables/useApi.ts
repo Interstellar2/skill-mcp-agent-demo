@@ -1,4 +1,4 @@
-import type { APISkillMeta, Skill, APIRun, StartRunRequest } from '../types'
+import type { APISkillMeta, Skill, APIRun, StartRunRequest, ToolInfo, SkillValidationResult } from '../types'
 
 const API_BASE = '/api'
 
@@ -61,4 +61,14 @@ export async function sendHITLApproval(runId: string, decision: string, modified
 
 export async function fetchCheckpoints(runId: string): Promise<{ checkpoint_id: string; run_id: string; step_index: number; step_status: string; created_at: string }[]> {
   return apiFetch(`/runs/${encodeURIComponent(runId)}/checkpoints`)
+}
+
+export async function fetchTools(): Promise<ToolInfo[]> {
+  return apiFetch('/tools')
+}
+
+export async function validateSkill(name: string): Promise<SkillValidationResult> {
+  return apiFetch(`/skills/${encodeURIComponent(name)}/validate`, {
+    method: 'POST',
+  })
 }

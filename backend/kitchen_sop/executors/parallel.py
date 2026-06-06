@@ -119,6 +119,7 @@ async def run_parallel_mode(
         logger.info("=" * 60)
 
         async def _execute(session):
+            await ctx.validate_steps(session)
             t = tracker or RunTracker(skill_name, mode="parallel", variables=ctx.merged_vars)
             if tracker is None:
                 async with t:

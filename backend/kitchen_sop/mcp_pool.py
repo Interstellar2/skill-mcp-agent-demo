@@ -37,6 +37,7 @@ class MCPConnectionPool:
         self._write = None
         self._stdio_ctx = None
         self._session_ctx = None
+        self._mcp_tools: Optional[list] = None
         self._initialized = True
 
     async def start(self):
@@ -55,7 +56,13 @@ class MCPConnectionPool:
             self._session = await self._session_ctx.__aenter__()
             await self._session.initialize()
             self._tools = await load_mcp_tools(self._session)
-            logger.info(f"MCPConnectionPool started with {len(self._tools)} tools")
+            # 同时缓存 MCP 原生工具列表（含 JSON Schema），供验证器使用
+            tools_result = await self._session.list_tools()
+            self._mcp_tools = tools_result.tools
+            logger.info(
+                f"MCPConnectionPool started with {len(self._tools)} tools "
+                f"({len(self._mcp_tools)} raw MCP tools)"
+            )
 
     async def stop(self):
         """关闭 MCP 连接."""
@@ -74,6 +81,7 @@ class MCPConnectionPool:
                 self._stdio_ctx = None
             self._session = None
             self._tools = None
+            self._mcp_tools = None
             logger.info("MCPConnectionPool stopped")
 
     @property
@@ -87,6 +95,13 @@ class MCPConnectionPool:
         if self._tools is None:
             raise RuntimeError("MCPConnectionPool not started")
         return self._tools
+
+    @property
+    def mcp_tools(self) -> list:
+        """返回 MCP 原生 Tool 对象列表（含 inputSchema），供验证器使用."""
+        if self._mcp_tools is None:
+            raise RuntimeError("MCPConnectionPool not started")
+        return self._mcp_tools
 
     async def call_tool(self, tool_name: str, arguments: dict):
         """带锁的 call_tool，保证 JSON-RPC over stdio 串行化."""

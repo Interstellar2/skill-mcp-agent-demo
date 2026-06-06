@@ -39,6 +39,7 @@ const runStore = useRunStore()
 
 onMounted(() => {
   appStore.loadSkills()
+  appStore.loadTools()
 })
 </script>
 

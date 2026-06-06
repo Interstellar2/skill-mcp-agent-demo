@@ -37,6 +37,7 @@ async def run_demo_mode(
         logger.info("=" * 60)
 
         async def _execute(session):
+            await ctx.validate_steps(session)
             if tracker is None:
                 async with RunTracker(
                     skill_name, mode="demo", variables=ctx.merged_vars

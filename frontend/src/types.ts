@@ -81,3 +81,15 @@ export interface ParallelBatch {
   step_indices: number[];
   total_batches: number;
 }
+
+export interface ToolInfo {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface SkillValidationResult {
+  valid: boolean;
+  errors: string[];
+  step_errors: { step_index: number | null; message: string }[];
+}

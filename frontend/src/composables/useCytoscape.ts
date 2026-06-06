@@ -49,6 +49,20 @@ export function useCytoscape() {
     cy.value.nodes().removeClass('batch-active')
   }
 
+  function highlightInvalidNodes(stepIndices: number[]) {
+    if (!cy.value) return
+    cy.value.nodes().removeClass('node-invalid')
+    stepIndices.forEach((idx) => {
+      const node = cy.value!.getElementById(`step-${idx}`)
+      if (node.length) node.addClass('node-invalid')
+    })
+  }
+
+  function clearInvalidHighlights() {
+    if (!cy.value) return
+    cy.value.nodes().removeClass('node-invalid')
+  }
+
   onUnmounted(destroy)
 
   return {
@@ -60,5 +74,7 @@ export function useCytoscape() {
     highlightNode,
     highlightBatch,
     clearBatchHighlights,
+    highlightInvalidNodes,
+    clearInvalidHighlights,
   }
 }

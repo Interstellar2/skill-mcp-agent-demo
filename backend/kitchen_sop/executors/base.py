@@ -96,6 +96,34 @@ class SkillExecutorContext:
 
         return self
 
+    async def validate_steps(self, session) -> None:
+        """用 MCP session 验证已解析的步骤（工具存在性 + 参数 Schema）.
+
+        Args:
+            session: 已初始化的 MCP ClientSession。
+
+        Raises:
+            SkillValidationError: 验证失败时抛出。
+        """
+        if not self.steps:
+            return
+        from ..skill_validator import validate_skill_steps
+
+        result = await session.list_tools()
+        validate_skill_steps(self.steps, result.tools)
+
+    async def validate_metadata_tools(self, session) -> None:
+        """验证 Skill frontmatter 中声明的工具列表."""
+        if not self.skill or not self.skill.metadata:
+            return
+        declared = self.skill.metadata.get("tools")
+        if not declared:
+            return
+        from ..skill_validator import validate_skill_metadata_tools
+
+        result = await session.list_tools()
+        validate_skill_metadata_tools(declared, result.tools)
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Post script
         post_script = self.scripts_meta.get("post")

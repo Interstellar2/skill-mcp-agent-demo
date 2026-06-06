@@ -16,8 +16,10 @@ from .schemas import (
     RunRecordOut,
     SkillDetailOut,
     SkillMetaOut,
+    SkillValidationOut,
     StartRunRequest,
     StartRunResponse,
+    ToolOut,
 )
 from .execution_manager import (
     _active_runs,
@@ -25,6 +27,14 @@ from .execution_manager import (
     resume_run_web,
     start_run,
 )
+from ..mcp_pool import get_mcp_pool
+from ..skill_validator import (
+    SkillValidationError,
+    validate_skill_metadata_tools,
+    validate_skill_steps,
+)
+from ..template_engine import render_sop, _resolve_variables
+from ..sop_parser import parse_sop_steps
 
 router = APIRouter()
 
@@ -135,3 +145,73 @@ async def list_checkpoints(run_id: str):
     cp_mgr = CheckpointManager()
     cps = cp_mgr.list_checkpoints(run_id)
     return [CheckpointOut(**cp.to_dict()) for cp in cps]
+
+
+@router.get("/tools", response_model=List[ToolOut])
+async def list_tools():
+    pool = get_mcp_pool()
+    result = await pool.session.list_tools()
+    return [
+        ToolOut(
+            name=t.name,
+            description=t.description or "",
+            inputSchema=t.inputSchema if isinstance(t.inputSchema, dict) else {},
+        )
+        for t in result.tools
+    ]
+
+
+@router.post("/skills/{skill_name}/validate", response_model=SkillValidationOut)
+async def validate_skill(skill_name: str):
+    sm = SkillsManager(SKILLS_DIR)
+    skill = sm.skills.get(skill_name)
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+
+    pool = get_mcp_pool()
+    mcp_tools_result = await pool.session.list_tools()
+    mcp_tools = mcp_tools_result.tools
+
+    raw_sop = skill.load_full_content()
+    merged_vars = _resolve_variables(skill.metadata.get("variables", {}))
+    rendered_sop = render_sop(raw_sop, merged_vars)
+    try:
+        steps = parse_sop_steps(rendered_sop, sm=sm, variables=merged_vars)
+    except ValueError as e:
+        return SkillValidationOut(
+            valid=False,
+            errors=[str(e)],
+        )
+
+    errors: List[str] = []
+    step_errors: List[dict] = []
+
+    try:
+        declared = skill.metadata.get("tools", [])
+        if declared:
+            validate_skill_metadata_tools(declared, mcp_tools)
+    except SkillValidationError as e:
+        errors.extend(str(e).splitlines())
+
+    try:
+        validate_skill_steps(steps, mcp_tools)
+    except SkillValidationError as e:
+        for line in str(e).splitlines():
+            line = line.strip()
+            if line.startswith("-"):
+                line = line[1:].strip()
+            if not line or line.startswith("Skill"):
+                continue
+            import re as _re
+            m = _re.match(r"步骤\s+(\d+):\s*(.*)", line)
+            if m:
+                step_errors.append({"step_index": int(m.group(1)), "message": m.group(2)})
+            else:
+                errors.append(line)
+
+    valid = not errors and not step_errors
+    return SkillValidationOut(
+        valid=valid,
+        errors=errors,
+        step_errors=step_errors,
+    )

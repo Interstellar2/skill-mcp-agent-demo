@@ -119,5 +119,15 @@ export function createGraphStyle(): any[] {
         'shadow-color': 'rgba(168, 85, 247, 0.2)',
       },
     },
+    {
+      selector: '.node-invalid',
+      style: {
+        'border-color': '#f59e0b',
+        'border-width': 3,
+        'background-color': '#fffbeb',
+        'shadow-blur': 12,
+        'shadow-color': 'rgba(245, 158, 11, 0.3)',
+      },
+    },
   ]
 }

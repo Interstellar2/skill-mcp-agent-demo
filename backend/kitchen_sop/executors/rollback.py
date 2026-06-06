@@ -11,6 +11,7 @@ from ..tracker import RunTracker
 from ..skill_manager import SkillsManager
 from ..config import SKILLS_DIR
 from .base import execute_step, log_step_call, log_step_result, log_step_error
+from ..skill_validator import validate_skill_steps
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -65,6 +66,8 @@ async def rollback_run(
     logger.info("=" * 60)
 
     async def _execute(session):
+        result = await session.list_tools()
+        validate_skill_steps(steps, result.tools)
         t = tracker or RunTracker(
             skill_name,
             mode="rollback",

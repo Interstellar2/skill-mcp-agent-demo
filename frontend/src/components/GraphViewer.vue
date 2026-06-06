@@ -28,7 +28,7 @@ const container = ref<HTMLElement | null>(null)
 const layout = ref('breadthfirst')
 const layouts = ['breadthfirst', 'dagre', 'grid', 'circle']
 
-const { mount, highlightNode, highlightBatch, clearBatchHighlights } = useCytoscape()
+const { mount, highlightNode, highlightBatch, clearBatchHighlights, highlightInvalidNodes } = useCytoscape()
 
 function buildElementsForSkill() {
   if (!appStore.selectedSkillDetail) return []
@@ -48,6 +48,9 @@ function rebuild() {
   Object.entries(runStore.stepStatusMap).forEach(([idx, status]) => {
     highlightNode(Number(idx), status)
   })
+  if (appStore.invalidStepIndices.size > 0) {
+    highlightInvalidNodes(Array.from(appStore.invalidStepIndices))
+  }
 }
 
 function setLayout(l: string) {
@@ -74,6 +77,10 @@ watch(() => runStore.activeBatchIndex, (batchIdx) => {
     }
   }
 })
+
+watch(() => appStore.invalidStepIndices, (indices) => {
+  highlightInvalidNodes(Array.from(indices))
+}, { deep: true })
 </script>
 
 <style scoped>
