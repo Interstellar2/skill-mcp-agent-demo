@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .models import RunRecord, StepRecord
 from ..config import RUNS_DIR
-from ..checkpoint import CheckpointManager
+from .checkpoint import CheckpointManager
 
 logger = logging.getLogger("kitchen_agent")
 

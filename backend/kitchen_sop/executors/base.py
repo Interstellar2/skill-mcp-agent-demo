@@ -3,11 +3,16 @@
 import logging
 from typing import Awaitable, Callable, Optional
 
-from ..skill_manager import SkillsManager
-from ..sop_parser import parse_sop_steps
-from ..template_engine import render_sop, _resolve_variables, render_template_file
-from ..script_runner import ScriptContext, ScriptRunner
-from ..reference_loader import ReferenceLoader
+from ..skill import (
+    SkillsManager,
+    parse_sop_steps,
+    render_sop,
+    _resolve_variables,
+    render_template_file,
+    ScriptContext,
+    ScriptRunner,
+    ReferenceLoader,
+)
 from ..config import SKILLS_DIR
 
 logger = logging.getLogger("kitchen_agent")
@@ -107,7 +112,7 @@ class SkillExecutorContext:
         """
         if not self.steps:
             return
-        from ..skill_validator import validate_skill_steps
+        from ..skill import validate_skill_steps
 
         result = await session.list_tools()
         validate_skill_steps(self.steps, result.tools)
@@ -119,7 +124,7 @@ class SkillExecutorContext:
         declared = self.skill.metadata.get("tools")
         if not declared:
             return
-        from ..skill_validator import validate_skill_metadata_tools
+        from ..skill import validate_skill_metadata_tools
 
         result = await session.list_tools()
         validate_skill_metadata_tools(declared, result.tools)

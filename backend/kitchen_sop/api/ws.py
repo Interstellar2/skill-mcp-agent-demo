@@ -58,7 +58,7 @@ async def ws_run(websocket: WebSocket, run_id: str):
             if msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
             elif msg_type == "hitl_approval":
-                from .execution_manager import _active_runs
+                from .orchestrator import _active_runs
 
                 active = _active_runs.get(run_id)
                 if active and active.hitl_bridge:

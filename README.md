@@ -25,13 +25,13 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     FastAPI Backend (Uvicorn)                        │
 │  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────────────┐│
-│  │ REST Router │  │ WebSocket    │  │ Execution Manager            ││
+│  │ REST Router │  │ WebSocket    │  │ Orchestrator                 ││
 │  │ /api/*      │  │ /ws/run/:id  │  │ (asyncio.Task per run)       ││
 │  └─────────────┘  └──────────────┘  └──────────────────────────────┘│
 │  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────────────┐│
-│  │ HITL Bridge │  │ MCP Pool     │  │ Web Execution Adapter        ││
-│  │ (asyncio.   │  │ (singleton   │  │ (wraps RunTracker +          ││
-│  │  Future)    │  │  per app)    │  │  broadcasts WS events)       ││
+│  │ HITL Bridge │  │ MCP Pool     │  │ RunTracker + WS Broadcast    ││
+│  │ (asyncio.   │  │ (singleton   │  │ (executors integrate tracker ││
+│  │  Future)    │  │  per app)    │  │  and broadcast events)       ││
 │  └─────────────┘  └──────────────┘  └──────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────┘
                               │
@@ -198,18 +198,21 @@ python backend/main.py --replay <run_id>
 │       ├── __init__.py
 │       ├── config.py                # 环境变量加载、项目根目录常量
 │       ├── logging_utils.py         # 统一日志配置
-│       ├── skill_manager.py         # Skill 扫描与解析（目录化结构）
-│       ├── sop_parser.py            # SOP Markdown 提取工具调用步骤（支持子流程内联）
-│       ├── template_engine.py       # 变量模板渲染（{{var}} 替换）
-│       ├── script_runner.py         # Skill 脚本执行引擎（pre/post hooks）
-│       ├── reference_loader.py      # 参考资料加载与格式化
+│       ├── skill/                   # Skill 解析与加载领域
+│       │   ├── __init__.py
+│       │   ├── manager.py           # Skill 扫描与解析（目录化结构）
+│       │   ├── parser.py            # SOP Markdown 提取工具调用步骤（支持子流程内联）
+│       │   ├── template.py          # 变量模板渲染（{{var}} 替换）
+│       │   ├── script.py            # Skill 脚本执行引擎（pre/post hooks）
+│       │   ├── reference.py         # 参考资料加载与格式化
+│       │   └── validator.py         # SKILL 校验：工具存在性 + 参数 Schema 匹配
 │       ├── mcp_client.py            # MCP 客户端连接管理（CLI 兼容）
 │       ├── mcp_pool.py              # MCP 单例连接池（Web 并发共享）
 │       ├── hitl_bridge.py           # HITL 异步信号桥（Web 模式）
-│       ├── checkpoint.py            # 检查点管理器（CheckpointManager）
 │       ├── tracker/                 # 执行观测与审计
 │       │   ├── __init__.py
 │       │   ├── models.py            # RunRecord / StepRecord / ExecutionPlan / Checkpoint 数据模型
+│       │   ├── checkpoint.py        # 检查点管理器（CheckpointManager）
 │       │   └── core.py              # RunTracker 上下文管理器与持久化
 │       ├── executors/               # 执行器（共享基类 + 6 种模式）
 │       │   ├── __init__.py
@@ -221,15 +224,14 @@ python backend/main.py --replay <run_id>
 │       │   ├── parallel.py          # Parallel：DAG 拓扑并行执行
 │       │   ├── resumable.py         # Resumable：检查点 + 自动断电续作
 │       │   ├── resume.py            # Resume：从检查点恢复执行
-│       │   ├── rollback.py          # Rollback：回滚到指定步骤重试
-│       │   └── web_adapter.py       # WebExecutionAdapter 包装器
+│       │   └── rollback.py          # Rollback：回滚到指定步骤重试
 │       └── api/                     # FastAPI Web 层
 │           ├── __init__.py
 │           ├── main.py              # FastAPI App（lifespan、CORS、router 挂载）
 │           ├── routes.py            # REST API 路由实现
 │           ├── ws.py                # WebSocket 连接管理与广播
 │           ├── schemas.py           # Pydantic 请求/响应模型
-│           └── execution_manager.py # ActiveRun 管理与 start_run()
+│           └── orchestrator.py      # ActiveRun 管理与 start_run()
 │
 ├── frontend/                        # Vue 3 + Pinia + Vite 前端
 │   ├── index.html

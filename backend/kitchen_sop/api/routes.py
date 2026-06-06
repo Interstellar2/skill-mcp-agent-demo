@@ -4,9 +4,9 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from ..skill_manager import SkillsManager
+from ..skill import SkillsManager
 from ..tracker import RunTracker
-from ..checkpoint import CheckpointManager
+from ..tracker.checkpoint import CheckpointManager
 from ..config import SKILLS_DIR
 from .schemas import (
     CheckpointOut,
@@ -21,20 +21,21 @@ from .schemas import (
     StartRunResponse,
     ToolOut,
 )
-from .execution_manager import (
+from .orchestrator import (
     _active_runs,
     rollback_run_web,
     resume_run_web,
     start_run,
 )
 from ..mcp_pool import get_mcp_pool
-from ..skill_validator import (
+from ..skill import (
     SkillValidationError,
     validate_skill_metadata_tools,
     validate_skill_steps,
+    render_sop,
+    _resolve_variables,
+    parse_sop_steps,
 )
-from ..template_engine import render_sop, _resolve_variables
-from ..sop_parser import parse_sop_steps
 
 router = APIRouter()
 
@@ -50,7 +51,7 @@ async def list_skills():
     result = []
     for name, skill in sm.skills.items():
         content = skill.load_full_content()
-        from ..sop_parser import parse_sop_steps
+        from ..skill import parse_sop_steps
 
         try:
             steps = parse_sop_steps(content, sm=sm, variables={})
@@ -75,7 +76,7 @@ async def get_skill(skill_name: str):
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
     content = skill.load_full_content()
-    from ..sop_parser import parse_sop_steps
+    from ..skill import parse_sop_steps
 
     try:
         steps = parse_sop_steps(content, sm=sm, variables={})
