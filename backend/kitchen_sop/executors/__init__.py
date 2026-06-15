@@ -7,7 +7,7 @@ def __getattr__(name):
         from .demo import run_demo_mode
         return run_demo_mode
     if name == "run_agent_mode":
-        from .agent import run_agent_mode
+        from .agent.agent_runner import run_agent_mode
         return run_agent_mode
     if name == "resume_run":
         from .resume import resume_run

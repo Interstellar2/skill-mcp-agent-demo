@@ -6,7 +6,8 @@ from typing import Awaitable, Callable, Optional
 from ..mcp_client import get_mcp_tools
 from ..mcp_pool import MCPConnectionPool
 from ..tracker import RunTracker
-from .base import SkillExecutorContext, execute_step, log_step_call, log_step_result, log_step_error
+from .base import SkillExecutorContext, log_step_call, log_step_result, log_step_error
+from .step_runner import StepRunner, build_step_hooks
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -39,7 +40,7 @@ async def run_resumable_mode(
         async def _execute(session):
             await ctx.validate_steps(session)
             t = tracker or RunTracker(
-                skill_name, mode="resumable", variables=ctx.merged_vars, enable_checkpoint=True
+                skill_name, mode="resumable", variables=ctx.merged_vars
             )
             if tracker is None:
                 async with t:
@@ -64,30 +65,26 @@ async def _run_resumable_steps(
     event_broadcaster: EventBroadcaster,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
+    hooks = build_step_hooks(tracker, event_broadcaster, enable_checkpoint=True)
+    runner = StepRunner(session, tracker, event_broadcaster, hooks=hooks)
 
     for idx, step in enumerate(steps, 1):
         tool_name = step["tool_name"]
         arguments = step["arguments"]
-
-        tracker.save_before_step_checkpoint(idx, tool_name, arguments)
+        output_variable = step.get("output_variable")
 
         step_rec = tracker.start_step(idx, tool_name, arguments)
         log_step_call(idx, tool_name, arguments)
 
         try:
-            text = await execute_step(
-                session, tracker, step_rec, tool_name, arguments,
-                event_broadcaster=event_broadcaster,
+            text = await runner.run(
+                step_rec,
+                tool_name,
+                arguments,
+                output_variable=output_variable,
+                compensator=step.get("compensator"),
             )
             log_step_result(text)
-            if event_broadcaster:
-                await event_broadcaster(
-                    "checkpoint_saved",
-                    {
-                        "step_index": idx,
-                        "checkpoint_id": step_rec.checkpoint_id,
-                    },
-                )
         except Exception as e:
             log_step_error(e)
             logger.info(f"💾 检查点已保存，可使用 --resume {tracker.record.run_id} 恢复")

@@ -4,12 +4,14 @@ import logging
 import os
 from typing import Awaitable, Callable, Optional
 
+from ..events import EventType
 from ..mcp_client import get_mcp_tools
 from ..mcp_pool import MCPConnectionPool
 from ..tracker import RunTracker
 from ..tracker.models import HumanApprovalRecord
 from ..hitl_bridge import HITLBridge
-from .base import SkillExecutorContext, execute_step, log_step_call, log_step_result, log_step_error
+from .base import SkillExecutorContext, log_step_call, log_step_result, log_step_error
+from .step_runner import StepRunner, build_step_hooks, build_step_hooks
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -102,6 +104,7 @@ async def run_hitl_mode(
     event_broadcaster: EventBroadcaster = None,
     hitl_bridge: Optional[HITLBridge] = None,
     mcp_pool: Optional[MCPConnectionPool] = None,
+    enable_checkpoint: bool = False,
 ):
     """Human-in-the-Loop 模式：顺序执行 SOP，但在配置的关键步骤前暂停等待人工确认."""
     async with SkillExecutorContext(
@@ -128,12 +131,16 @@ async def run_hitl_mode(
 
         async def _execute(session):
             await ctx.validate_steps(session)
-            t = tracker or RunTracker(skill_name, mode="hitl", variables=merged_vars)
+            t = tracker or RunTracker(
+                skill_name,
+                mode="hitl",
+                variables=merged_vars,
+            )
             if tracker is None:
                 async with t:
-                    await _run_hitl_steps(t, session, steps, hitl_config, event_broadcaster, hitl_bridge)
+                    await _run_hitl_steps(t, session, steps, hitl_config, event_broadcaster, hitl_bridge, enable_checkpoint=enable_checkpoint)
             else:
-                await _run_hitl_steps(t, session, steps, hitl_config, event_broadcaster, hitl_bridge)
+                await _run_hitl_steps(t, session, steps, hitl_config, event_broadcaster, hitl_bridge, enable_checkpoint=enable_checkpoint)
 
         if mcp_pool is not None:
             await _execute(mcp_pool.session)
@@ -152,12 +159,16 @@ async def _run_hitl_steps(
     hitl_config: list,
     event_broadcaster: EventBroadcaster,
     hitl_bridge: Optional[HITLBridge],
+    enable_checkpoint: bool = False,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
+    hooks = build_step_hooks(tracker, event_broadcaster, enable_checkpoint=enable_checkpoint)
+    runner = StepRunner(session, tracker, event_broadcaster, hooks=hooks)
 
     for idx, step in enumerate(steps, 1):
         tool_name = step["tool_name"]
         arguments = dict(step["arguments"])
+        output_variable = step.get("output_variable")
 
         approval_prompt = _should_request_approval(idx, tool_name, arguments, hitl_config)
         ha = None
@@ -165,7 +176,7 @@ async def _run_hitl_steps(
         if approval_prompt:
             if hitl_bridge is not None and event_broadcaster is not None:
                 await event_broadcaster(
-                    "hitl_request",
+                    EventType.HITL_REQUEST.value,
                     {
                         "approval_id": hitl_bridge.approval_id,
                         "prompt": approval_prompt,
@@ -187,7 +198,7 @@ async def _run_hitl_steps(
                 )
                 if decision == "rejected":
                     step_rec = tracker.start_step(idx, tool_name, arguments)
-                    tracker.fail_step(step_rec, error_message="用户拒绝执行此步骤")
+                    await tracker.fail_step(step_rec, error_message="用户拒绝执行此步骤")
                     logger.error(f"   ❌ 步骤 {idx} 被用户拒绝，执行终止")
                     break
                 elif decision == "modified" and modified_args:
@@ -196,7 +207,7 @@ async def _run_hitl_steps(
                 ha = await _request_human_approval_cli(approval_prompt, arguments)
                 if ha.decision == "rejected":
                     step_rec = tracker.start_step(idx, tool_name, arguments)
-                    tracker.fail_step(step_rec, error_message="用户拒绝执行此步骤")
+                    await tracker.fail_step(step_rec, error_message="用户拒绝执行此步骤")
                     logger.error(f"   ❌ 步骤 {idx} 被用户拒绝，执行终止")
                     break
                 elif ha.decision == "modified" and ha.modified_arguments:
@@ -211,9 +222,12 @@ async def _run_hitl_steps(
         log_step_call(idx, tool_name, arguments)
 
         try:
-            text = await execute_step(
-                session, tracker, step_rec, tool_name, arguments,
-                event_broadcaster=event_broadcaster,
+            text = await runner.run(
+                step_rec,
+                tool_name,
+                arguments,
+                output_variable=output_variable,
+                compensator=step.get("compensator"),
             )
             log_step_result(text)
         except Exception as e:

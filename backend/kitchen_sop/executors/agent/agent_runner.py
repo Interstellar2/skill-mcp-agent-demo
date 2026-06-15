@@ -1,17 +1,23 @@
-"""Agent 模式：使用 LangChain + LLM 自主决策调用工具."""
+"""Agent 运行器：使用 LangChain + LLM 自主决策调用工具."""
 
+import copy
 import logging
 import os
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain_core.callbacks import AsyncCallbackHandler
 
-from ..mcp_client import get_mcp_tools
-from ..mcp_pool import MCPConnectionPool
-from ..tracker import RunTracker
-from .base import SkillExecutorContext
+from ...events import EventType
+from ...mcp_client import get_mcp_tools
+from ...mcp_pool import MCPConnectionPool
+from ...tracker import RunTracker
+from ..base import SkillExecutorContext
+from ..step_runner import StepRunner
+from .message_recorder import AgentMessageRecorder
+from .message_reconstructor import reconstruct_lc_messages
+from .tracked_tool_factory import wrap_tools_with_step_runner
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -27,7 +33,7 @@ class AgentThoughtCallback(AsyncCallbackHandler):
     async def on_agent_action(self, action, **kwargs):
         if self.event_broadcaster:
             await self.event_broadcaster(
-                "agent_thought",
+                EventType.AGENT_THOUGHT.value,
                 {
                     "type": "action",
                     "tool": getattr(action, "tool", None),
@@ -39,7 +45,7 @@ class AgentThoughtCallback(AsyncCallbackHandler):
     async def on_tool_start(self, serialized, input_str, **kwargs):
         if self.event_broadcaster:
             await self.event_broadcaster(
-                "agent_thought",
+                EventType.AGENT_THOUGHT.value,
                 {
                     "type": "tool_start",
                     "tool": serialized.get("name") if serialized else None,
@@ -50,7 +56,7 @@ class AgentThoughtCallback(AsyncCallbackHandler):
     async def on_tool_end(self, output, **kwargs):
         if self.event_broadcaster:
             await self.event_broadcaster(
-                "agent_thought",
+                EventType.AGENT_THOUGHT.value,
                 {
                     "type": "tool_end",
                     "output": str(output) if output else None,
@@ -67,6 +73,9 @@ async def run_agent_mode(
     tracker: Optional[RunTracker] = None,
     event_broadcaster: EventBroadcaster = None,
     mcp_pool: Optional[MCPConnectionPool] = None,
+    initial_messages: Optional[List[Dict[str, Any]]] = None,
+    enable_checkpoint: bool = False,
+    hooks_factory=None,
 ):
     """Agent 模式: 使用 LangChain + LLM，让大模型根据 SOP 自主决策调用工具."""
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -120,9 +129,9 @@ async def run_agent_mode(
             )
             if tracker is None:
                 async with t:
-                    await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster)
+                    await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster, model, initial_messages, enable_checkpoint, hooks_factory)
             else:
-                await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster)
+                await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster, model, initial_messages, enable_checkpoint, hooks_factory)
 
         if mcp_pool is not None:
             await _execute(mcp_pool.session, mcp_pool.tools)
@@ -139,72 +148,43 @@ async def _run_agent(
     system_prompt: str,
     query: str,
     event_broadcaster: EventBroadcaster,
+    model: str,
+    initial_messages: Optional[List[Dict[str, Any]]] = None,
+    enable_checkpoint: bool = False,
+    hooks_factory=None,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
 
-    original_call_tool = session.call_tool
+    recorder = AgentMessageRecorder()
+    if initial_messages:
+        recorder.messages = copy.deepcopy(initial_messages)
+    else:
+        recorder.record_human(query)
 
-    async def tracked_call_tool(tool_name, arguments):
-        step_rec = tracker.start_step(
-            len(tracker.record.steps) + 1, tool_name, arguments
-        )
-        if event_broadcaster:
-            await event_broadcaster(
-                "step_start",
-                {
-                    "step_index": step_rec.step_index,
-                    "tool_name": tool_name,
-                    "arguments": arguments,
-                },
-            )
-        try:
-            result = await original_call_tool(tool_name, arguments=arguments)
-            text = None
-            if result.content:
-                text = (
-                    result.content[0].text
-                    if hasattr(result.content[0], "text")
-                    else str(result.content[0])
-                )
-            tracker.finish_step(step_rec, result_text=text)
-            if event_broadcaster:
-                await event_broadcaster(
-                    "step_finish",
-                    {
-                        "step_index": step_rec.step_index,
-                        "tool_name": tool_name,
-                        "result_text": text,
-                    },
-                )
-            return result
-        except Exception as e:
-            tracker.fail_step(step_rec, error_message=str(e))
-            if event_broadcaster:
-                await event_broadcaster(
-                    "step_error",
-                    {
-                        "step_index": step_rec.step_index,
-                        "tool_name": tool_name,
-                        "error_message": str(e),
-                    },
-                )
-            raise
+    def _default_hooks_factory(tracker):
+        from ..step_runner import build_step_hooks
+        return build_step_hooks(tracker, event_broadcaster, enable_checkpoint=enable_checkpoint)
 
-    session.call_tool = tracked_call_tool
+    wrapped_tools = wrap_tools_with_step_runner(
+        tools, session, tracker, event_broadcaster, recorder, system_prompt, query, model,
+        hooks_factory=hooks_factory or _default_hooks_factory,
+    )
 
-    callbacks = []
+    callbacks = [recorder]
     if event_broadcaster:
         callbacks.append(AgentThoughtCallback(event_broadcaster))
 
     agent = create_agent(
         model=llm,
-        tools=tools,
+        tools=wrapped_tools,
         system_prompt=system_prompt,
     )
 
+    lc_messages = reconstruct_lc_messages(recorder.messages)
+
     logger.info(f"🚀 开始执行: {query}")
     result = await agent.ainvoke(
-        {"messages": [("user", query)]},
+        {"messages": lc_messages},
         config={"callbacks": callbacks} if callbacks else None,
     )
 

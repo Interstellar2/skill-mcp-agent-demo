@@ -24,3 +24,18 @@ DEFAULT_SKILL = "tomato_egg"
 SKILLS_DIR = PROJECT_ROOT / "skills"
 LOGS_DIR = PROJECT_ROOT / "logs"
 RUNS_DIR = PROJECT_ROOT / "runs"
+
+# StateBackend 配置
+STATE_BACKEND = os.environ.get("KITCHEN_STATE_BACKEND", "local_json")
+
+# S3 环境常量
+KITCHEN_S3_BUCKET = os.environ.get("KITCHEN_S3_BUCKET")
+KITCHEN_S3_PREFIX = os.environ.get("KITCHEN_S3_PREFIX", "kitchen_sop")
+KITCHEN_S3_ENDPOINT_URL = os.environ.get("KITCHEN_S3_ENDPOINT_URL")
+AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.environ.get("AWS_REGION")
+
+# Redis 环境常量
+KITCHEN_REDIS_URL = os.environ.get("KITCHEN_REDIS_URL", "redis://localhost:6379/0")
+KITCHEN_REDIS_PREFIX = os.environ.get("KITCHEN_REDIS_PREFIX", "kitchen_sop")

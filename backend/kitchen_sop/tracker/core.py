@@ -1,29 +1,29 @@
-"""RunTracker 核心：上下文管理器 + 持久化 + 查询."""
+"""RunTracker 核心：内存状态跟踪器."""
 
-import json
+import copy
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .models import RunRecord, StepRecord
+from .models import ExecutionPlan, RunRecord, StepRecord
 from ..config import RUNS_DIR
-from .checkpoint import CheckpointManager
+from .state_backend import StateBackend, get_state_backend
 
 logger = logging.getLogger("kitchen_agent")
 
 
 class RunTracker:
-    """追踪一次 Skill 执行的完整生命周期.
+    """追踪一次 Skill 执行的完整生命周期（仅内存状态）.
 
     Usage:
         async with RunTracker(skill_name, mode="demo") as tracker:
             step_rec = tracker.start_step(1, "cut_ingredient", {"ingredient": "番茄"})
             try:
                 result = await session.call_tool(...)
-                tracker.finish_step(step_rec, result_text="...")
+                await tracker.finish_step(step_rec, result_text="...")
             except Exception as e:
-                tracker.fail_step(step_rec, str(e))
+                await tracker.fail_step(step_rec, str(e))
     """
 
     def __init__(
@@ -31,16 +31,13 @@ class RunTracker:
         skill_name: str,
         mode: str,
         variables: Optional[dict] = None,
-        runs_dir = None,
-        enable_checkpoint: bool = False,
+        runs_dir=None,
+        backend: Optional[StateBackend] = None,
     ):
         self.record = RunRecord.new(skill_name, mode, variables)
         self.runs_dir = Path(runs_dir) if runs_dir else RUNS_DIR
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        self.enable_checkpoint = enable_checkpoint
-        self._cp_manager: Optional[CheckpointManager] = None
-        if enable_checkpoint:
-            self._cp_manager = CheckpointManager(runs_dir=self.runs_dir)
+        self._backend = backend or get_state_backend()
 
     async def __aenter__(self):
         logger.info(f"📊 RunTracker 启动 | run_id={self.record.run_id}")
@@ -52,7 +49,7 @@ class RunTracker:
             self.record.overall_status = "error"
         else:
             self.record.overall_status = "success"
-        self._persist()
+        await self._persist()
         logger.info(
             f"📊 RunTracker 结束 | run_id={self.record.run_id} | "
             f"status={self.record.overall_status} | steps={len(self.record.steps)}"
@@ -75,64 +72,48 @@ class RunTracker:
         self.record.steps.append(step)
         return step
 
-    def finish_step(self, step: StepRecord, result_text: Optional[str] = None):
+    async def finish_step(
+        self,
+        step: StepRecord,
+        result_text: Optional[str] = None,
+    ):
         step.ended_at = datetime.now().isoformat(timespec="seconds")
         step.status = "success"
         step.result_text = result_text
         step.duration_ms = self._calc_duration_ms(step.started_at, step.ended_at)
-        if self.enable_checkpoint and self._cp_manager:
-            cp = self._cp_manager.save_checkpoint(
-                run_id=self.record.run_id,
-                step_index=step.step_index,
-                step_status="after_step",
-                variables=self.record.variables or {},
-                step_results=self.record.steps,
-            )
-            step.checkpoint_id = cp.checkpoint_id
 
-    def fail_step(self, step: StepRecord, error_message: str):
+    async def fail_step(
+        self,
+        step: StepRecord,
+        error_message: str,
+    ):
         step.ended_at = datetime.now().isoformat(timespec="seconds")
         step.status = "error"
         step.error_message = error_message
         step.duration_ms = self._calc_duration_ms(step.started_at, step.ended_at)
-        if self.enable_checkpoint and self._cp_manager:
-            cp = self._cp_manager.save_checkpoint(
-                run_id=self.record.run_id,
-                step_index=step.step_index,
-                step_status="error",
-                variables=self.record.variables or {},
-                step_results=self.record.steps,
-            )
-            step.checkpoint_id = cp.checkpoint_id
 
-    def save_before_step_checkpoint(self, step_index: int, tool_name: str, arguments: Dict[str, Any]):
-        """在执行某步之前保存检查点（用于断点续作）."""
-        if self.enable_checkpoint and self._cp_manager:
-            # 先构造一个 pending 状态的 step record 用于保存
-            pending_step = StepRecord(
-                step_index=step_index,
-                tool_name=tool_name,
-                arguments=arguments,
-                status="pending",
-                started_at=datetime.now().isoformat(timespec="seconds"),
-            )
-            steps_snapshot = self.record.steps + [pending_step]
-            cp = self._cp_manager.save_checkpoint(
-                run_id=self.record.run_id,
-                step_index=step_index,
-                step_status="before_step",
-                variables=self.record.variables or {},
-                step_results=steps_snapshot,
-            )
-            pending_step.checkpoint_id = cp.checkpoint_id
-            return cp
-        return None
+    def update_variables(self, updates: dict):
+        """安全深合并更新 variables."""
+        if not updates:
+            return
+        if self.record.variables is None:
+            self.record.variables = {}
+        for key, value in updates.items():
+            if isinstance(value, dict) and isinstance(self.record.variables.get(key), dict):
+                self.record.variables[key] = copy.deepcopy(self.record.variables[key])
+                self.record.variables[key].update(value)
+            else:
+                self.record.variables[key] = copy.deepcopy(value)
+        logger.debug(f"Variables 更新: {updates}")
 
-    def _persist(self):
-        path = self.runs_dir / f"{self.record.run_id}.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.record.to_dict(), f, ensure_ascii=False, indent=2)
-        logger.debug(f"RunTracker 已持久化: {path}")
+    async def set_execution_plan(self, plan: ExecutionPlan):
+        """把生成的执行计划写入 RunRecord."""
+        self.record.execution_plan = plan
+        await self._persist()
+
+    async def _persist(self):
+        await self._backend.save_run(self.record)
+        logger.debug(f"RunTracker 已持久化: {self.record.run_id}")
 
     @staticmethod
     def _calc_duration_ms(start: Optional[str], end: Optional[str]) -> Optional[int]:
@@ -146,22 +127,30 @@ class RunTracker:
             return None
 
     @classmethod
-    def list_runs(cls, runs_dir = None, limit: int = 20) -> List[RunRecord]:
-        d = Path(runs_dir) if runs_dir else RUNS_DIR
-        if not d.exists():
-            return []
-        files = sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        records = []
-        for f in files[:limit]:
-            with open(f, "r", encoding="utf-8") as fh:
-                records.append(RunRecord.from_dict(json.load(fh)))
-        return records
+    async def list_runs(
+        cls,
+        runs_dir=None,
+        limit: int = 20,
+        backend: Optional[StateBackend] = None,
+    ) -> List[RunRecord]:
+        backend = backend or get_state_backend()
+        return await backend.list_runs(limit=limit)
 
     @classmethod
-    def load_run(cls, run_id: str, runs_dir = None) -> Optional[RunRecord]:
-        d = Path(runs_dir) if runs_dir else RUNS_DIR
-        path = d / f"{run_id}.json"
-        if not path.exists():
-            return None
-        with open(path, "r", encoding="utf-8") as f:
-            return RunRecord.from_dict(json.load(f))
+    async def load_run(
+        cls,
+        run_id: str,
+        runs_dir=None,
+        backend: Optional[StateBackend] = None,
+    ) -> Optional[RunRecord]:
+        backend = backend or get_state_backend()
+        return await backend.load_run(run_id)
+
+    @classmethod
+    async def delete_run(
+        cls,
+        run_id: str,
+        backend: Optional[StateBackend] = None,
+    ) -> None:
+        backend = backend or get_state_backend()
+        await backend.delete_run(run_id)

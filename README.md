@@ -213,25 +213,47 @@ python backend/main.py --replay <run_id>
 │       │   ├── __init__.py
 │       │   ├── models.py            # RunRecord / StepRecord / ExecutionPlan / Checkpoint 数据模型
 │       │   ├── checkpoint.py        # 检查点管理器（CheckpointManager）
-│       │   └── core.py              # RunTracker 上下文管理器与持久化
+│       │   ├── core.py              # RunTracker 上下文管理器与持久化
+│       │   └── state_backend/       # 可插拔状态后端（local_json / S3 / Redis）
 │       ├── executors/               # 执行器（共享基类 + 6 种模式）
 │       │   ├── __init__.py
-│       │   ├── base.py              # SkillExecutorContext + execute_step 通用封装
+│       │   ├── base.py              # SkillExecutorContext 通用上下文
+│       │   ├── step_runner.py       # 单步工具调用编排（Hooks 驱动）
+│       │   ├── hooks/               # StepRunner 钩子：事件/checkpoint/变量/补偿/agent消息
+│       │   │   ├── base.py
+│       │   │   ├── event_hook.py
+│       │   │   ├── checkpoint_hook.py
+│       │   │   ├── variable_hook.py
+│       │   │   ├── compensation_hook.py
+│       │   │   └── agent_message_hook.py
+│       │   ├── agent/               # Agent 模式子模块
+│       │   │   ├── message_recorder.py
+│       │   │   ├── message_reconstructor.py
+│       │   │   ├── tracked_tool_factory.py
+│       │   │   └── agent_runner.py
+│       │   ├── checkpoint_strategies/ # Resume/Rollback 策略模式
 │       │   ├── demo.py              # Demo 模式：按 SOP 顺序执行
-│       │   ├── agent.py             # Agent 模式：LangChain + LLM 自主决策
 │       │   ├── plan_then_execute.py # Plan-then-Execute：计划-执行分离
 │       │   ├── hitl.py              # Human-in-the-Loop：人在回路
 │       │   ├── parallel.py          # Parallel：DAG 拓扑并行执行
 │       │   ├── resumable.py         # Resumable：检查点 + 自动断电续作
 │       │   ├── resume.py            # Resume：从检查点恢复执行
 │       │   └── rollback.py          # Rollback：回滚到指定步骤重试
+│       ├── tracker/                 # 执行记录与状态后端
+│       │   ├── core.py              # RunTracker：内存状态跟踪器
+│       │   ├── models.py            # RunRecord / StepRecord / Checkpoint 数据模型
+│       │   ├── checkpoint.py        # CheckpointManager：checkpoint CRUD
+│       │   ├── checkpoint_service.py # CheckpointService：保存时机与保留策略
+│       │   ├── retention.py         # 保留策略与清理执行器
+│       │   └── state_backend/       # StateBackend 抽象与实现
+│       ├── events.py                # EventType 枚举：统一 WS/执行器事件契约
 │       └── api/                     # FastAPI Web 层
 │           ├── __init__.py
 │           ├── main.py              # FastAPI App（lifespan、CORS、router 挂载）
 │           ├── routes.py            # REST API 路由实现
 │           ├── ws.py                # WebSocket 连接管理与广播
 │           ├── schemas.py           # Pydantic 请求/响应模型
-│           └── orchestrator.py      # ActiveRun 管理与 start_run()
+│           └── orchestrator.py      # launch_run / start_run / resume / rollback
 │
 ├── frontend/                        # Vue 3 + Pinia + Vite 前端
 │   ├── index.html
@@ -532,7 +554,7 @@ python backend/main.py --replay 59a3423e5165
 
 ### 检查点与恢复
 
-Resumable 模式会在每步执行前后自动保存检查点到 `runs/checkpoints/<run_id>_<cp_id>.json`：
+Resumable 模式会在每步执行前后自动保存检查点：
 
 ```bash
 # Web UI 中点击 Run 选择 Resumable 模式即可
@@ -543,6 +565,40 @@ python backend/main.py --rollback <run_id> --to-step 3
 ```
 
 检查点包含：当前步骤索引、步骤状态（before_step/after_step）、变量快照、已完成步骤结果。
+恢复时支持策略模式：顺序恢复、计划恢复、并行批次恢复、Agent 消息历史恢复。
+
+### 补偿回滚
+
+支持在 SOP 中为步骤声明补偿工具，回滚时先反向执行补偿再重新执行：
+
+```markdown
+**工具**: `heat_pan`
+**补偿工具**: `season`
+**补偿参数**:
+- salt: "1小勺"
+```
+
+CLI 使用 `--compensate` 触发补偿回滚：
+
+```bash
+python backend/main.py --rollback <run_id> --to-step 3 --compensate
+```
+
+### 分布式状态存储
+
+默认使用本地 JSON 文件存储 runs 和 checkpoints。可通过环境变量切换到 S3 或 Redis：
+
+```bash
+# S3
+export KITCHEN_STATE_BACKEND=s3
+export KITCHEN_S3_BUCKET=my-bucket
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+
+# Redis
+export KITCHEN_STATE_BACKEND=redis
+export KITCHEN_REDIS_URL=redis://localhost:6379/0
+```
 
 ---
 

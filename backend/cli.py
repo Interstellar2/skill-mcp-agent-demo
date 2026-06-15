@@ -55,10 +55,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="运行 Resumable 模式：顺序执行并自动保存检查点（用于断电续作）",
     )
     parser.add_argument(
+        "--enable-checkpoint",
+        action="store_true",
+        dest="enable_checkpoint",
+        help="在 Demo / Agent / Plan / HITL / Parallel 模式中也启用 checkpoint 保存",
+    )
+    parser.add_argument(
         "--resume",
         type=str,
         metavar="RUN_ID",
-        help="从指定 run 的最新检查点恢复执行",
+        help="从指定 run 的检查点恢复执行",
+    )
+    parser.add_argument(
+        "--checkpoint-id",
+        type=str,
+        metavar="CHECKPOINT_ID",
+        help="恢复或回滚时使用的精确 checkpoint ID（配合 --resume / --rollback）",
     )
     parser.add_argument(
         "--rollback",
@@ -71,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         metavar="N",
         help="回滚目标步骤（配合 --rollback 使用）",
+    )
+    parser.add_argument(
+        "--compensate",
+        action="store_true",
+        help="回滚时执行补偿：对带补偿工具的步骤先反向补偿，再重新执行",
     )
     parser.add_argument(
         "--skill",

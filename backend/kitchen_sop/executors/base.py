@@ -1,7 +1,7 @@
 """执行器共享基类与工具函数."""
 
 import logging
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from ..skill import (
     SkillsManager,
@@ -152,68 +152,6 @@ class SkillExecutorContext:
                 logger.info("=" * 60)
 
         return False
-
-
-async def execute_step(
-    session,
-    tracker,
-    step_rec,
-    tool_name,
-    arguments,
-    event_broadcaster: EventBroadcaster = None,
-) -> Optional[str]:
-    """调用 MCP 工具并更新 tracker.
-
-    Returns:
-        提取到的 result_text，无内容时返回 None。
-
-    Raises:
-        Exception: 工具调用失败时抛出（tracker 已记录错误）。
-    """
-    if event_broadcaster:
-        await event_broadcaster(
-            "step_start",
-            {
-                "step_index": step_rec.step_index,
-                "tool_name": tool_name,
-                "arguments": arguments,
-            },
-        )
-
-    try:
-        result = await session.call_tool(tool_name, arguments=arguments)
-    except Exception as e:
-        tracker.fail_step(step_rec, error_message=str(e))
-        if event_broadcaster:
-            await event_broadcaster(
-                "step_error",
-                {
-                    "step_index": step_rec.step_index,
-                    "tool_name": tool_name,
-                    "error_message": str(e),
-                },
-            )
-        raise
-
-    text = None
-    if result.content:
-        text = (
-            result.content[0].text
-            if hasattr(result.content[0], "text")
-            else str(result.content[0])
-        )
-    tracker.finish_step(step_rec, result_text=text)
-
-    if event_broadcaster:
-        await event_broadcaster(
-            "step_finish",
-            {
-                "step_index": step_rec.step_index,
-                "tool_name": tool_name,
-                "result_text": text,
-            },
-        )
-    return text
 
 
 def log_step_call(idx, tool_name, arguments):

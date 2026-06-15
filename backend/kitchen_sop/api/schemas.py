@@ -26,6 +26,7 @@ class StartRunRequest(BaseModel):
     mode: str = "demo"
     variables: Optional[Dict[str, Any]] = None
     model: Optional[str] = None
+    enable_checkpoint: Optional[bool] = False
 
 
 class StartRunResponse(BaseModel):
@@ -45,6 +46,9 @@ class StepRecordOut(BaseModel):
     parallel_group_id: Optional[str] = None
     checkpoint_id: Optional[str] = None
     human_approval: Optional[Dict[str, Any]] = None
+    agent_messages: Optional[List[Dict[str, Any]]] = None
+    compensation_context: Optional[Dict[str, Any]] = None
+    compensation_status: Optional[Dict[str, Any]] = None
 
 
 class RunRecordOut(BaseModel):
@@ -59,6 +63,7 @@ class RunRecordOut(BaseModel):
     resumed_from: Optional[str] = None
     rollback_to_step: Optional[int] = None
     execution_plan: Optional[Dict[str, Any]] = None
+    checkpoint_id: Optional[str] = None
 
 
 class ResumeRequest(BaseModel):
@@ -67,6 +72,8 @@ class ResumeRequest(BaseModel):
 
 class RollbackRequest(BaseModel):
     to_step: int
+    checkpoint_id: Optional[str] = None
+    compensate: Optional[bool] = False
 
 
 class HITLApprovalRequest(BaseModel):
@@ -80,6 +87,8 @@ class CheckpointOut(BaseModel):
     step_index: int
     step_status: str
     created_at: str
+    agent_messages: Optional[List[Dict[str, Any]]] = None
+    executor_state: Optional[Dict[str, Any]] = None
 
 
 class WSMessage(BaseModel):

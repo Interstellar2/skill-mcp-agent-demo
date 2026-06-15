@@ -74,6 +74,8 @@ class Checkpoint:
     variables: Dict[str, Any]
     step_results: List[dict]
     created_at: str
+    executor_state: Optional[Dict[str, Any]] = None
+    agent_messages: Optional[List[dict]] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -98,6 +100,9 @@ class StepRecord:
     human_approval: Optional[HumanApprovalRecord] = None
     parallel_group_id: Optional[str] = None
     checkpoint_id: Optional[str] = None
+    agent_messages: Optional[List[dict]] = None
+    compensation_context: Optional[Dict[str, Any]] = None
+    compensation_status: Optional[dict] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -127,6 +132,7 @@ class RunRecord:
     execution_plan: Optional[ExecutionPlan] = None
     resumed_from: Optional[str] = None  # 从哪个 run_id 恢复
     rollback_to_step: Optional[int] = None
+    checkpoint_id: Optional[str] = None  # 最后写入的 checkpoint id
 
     @classmethod
     def new(

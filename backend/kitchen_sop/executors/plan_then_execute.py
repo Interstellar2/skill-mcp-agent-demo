@@ -7,10 +7,13 @@ from typing import Awaitable, Callable, Optional
 
 from langchain_openai import ChatOpenAI
 
+from ..events import EventType
 from ..mcp_client import get_mcp_tools
 from ..mcp_pool import MCPConnectionPool
 from ..tracker import RunTracker
-from .base import SkillExecutorContext, execute_step, log_step_call, log_step_result, log_step_error
+from ..tracker.models import ExecutionPlan, PlanStep
+from .base import SkillExecutorContext, log_step_call, log_step_result, log_step_error
+from .step_runner import StepRunner, build_step_hooks, build_step_hooks
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -94,6 +97,7 @@ async def run_plan_then_execute_mode(
     tracker: Optional[RunTracker] = None,
     event_broadcaster: EventBroadcaster = None,
     mcp_pool: Optional[MCPConnectionPool] = None,
+    enable_checkpoint: bool = False,
 ):
     """Plan-then-Execute 模式：
     Phase 1 - LLM 生成结构化执行计划；
@@ -137,9 +141,23 @@ async def run_plan_then_execute_mode(
                 logger.error(f"计划生成失败: {e}")
                 return
 
+            # 构造 ExecutionPlan 并写入 tracker
+            execution_plan = ExecutionPlan(
+                steps=[
+                    PlanStep(
+                        step_index=s.get("step_index", i + 1),
+                        tool_name=s["tool_name"],
+                        arguments=s.get("arguments", {}),
+                        reasoning=s.get("reasoning", ""),
+                    )
+                    for i, s in enumerate(plan_steps)
+                ],
+                estimated_duration_ms=60000,
+            )
+
             if event_broadcaster:
                 await event_broadcaster(
-                    "plan_generated",
+                    EventType.PLAN_GENERATED.value,
                     {
                         "steps": plan_steps,
                         "estimated_duration_ms": 60000,
@@ -150,12 +168,18 @@ async def run_plan_then_execute_mode(
             logger.info("🔨 Phase 2: 按序执行计划...")
             logger.info("=" * 60)
 
-            t = tracker or RunTracker(skill_name, mode="plan_then_execute", variables=ctx.merged_vars)
+            t = tracker or RunTracker(
+                skill_name,
+                mode="plan_then_execute",
+                variables=ctx.merged_vars,
+            )
             if tracker is None:
                 async with t:
-                    await _run_plan(t, session, plan_steps, event_broadcaster)
+                    await t.set_execution_plan(execution_plan)
+                    await _run_plan(t, session, plan_steps, event_broadcaster, enable_checkpoint=enable_checkpoint)
             else:
-                await _run_plan(t, session, plan_steps, event_broadcaster)
+                await t.set_execution_plan(execution_plan)
+                await _run_plan(t, session, plan_steps, event_broadcaster, enable_checkpoint=enable_checkpoint)
 
         if mcp_pool is not None:
             await _execute(mcp_pool.session)
@@ -169,14 +193,23 @@ async def _run_plan(
     session,
     plan_steps: list,
     event_broadcaster: EventBroadcaster,
+    enable_checkpoint: bool = False,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
+    hooks = build_step_hooks(tracker, event_broadcaster, enable_checkpoint=enable_checkpoint)
+    runner = StepRunner(session, tracker, event_broadcaster, hooks=hooks)
 
     for step_data in plan_steps:
         idx = step_data.get("step_index", 0)
         tool_name = step_data["tool_name"]
         arguments = step_data.get("arguments", {})
         reasoning = step_data.get("reasoning", "")
+        output_variable = step_data.get("output_variable")
+
+        executor_state = {
+            "plan_steps": plan_steps,
+            "current_step_index": idx,
+        }
 
         step_rec = tracker.start_step(idx, tool_name, arguments)
         log_step_call(idx, tool_name, arguments)
@@ -184,9 +217,13 @@ async def _run_plan(
             logger.info(f"   理由: {reasoning}")
 
         try:
-            text = await execute_step(
-                session, tracker, step_rec, tool_name, arguments,
-                event_broadcaster=event_broadcaster,
+            text = await runner.run(
+                step_rec,
+                tool_name,
+                arguments,
+                output_variable=output_variable,
+                step_checkpoint_state=executor_state,
+                compensator=step_data.get("compensator"),
             )
             log_step_result(text)
         except Exception as e:

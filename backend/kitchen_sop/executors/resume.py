@@ -1,16 +1,18 @@
-"""从检查点恢复执行."""
+"""从检查点恢复执行（orchestrator，使用策略模式）."""
 
 import logging
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, List, Optional
 
-from ..tracker.checkpoint import CheckpointManager
 from ..mcp_client import get_mcp_tools
 from ..mcp_pool import MCPConnectionPool
+from ..tracker.checkpoint import CheckpointManager
+from ..tracker.state_backend import StateBackend, get_state_backend
 from ..skill import parse_sop_steps, render_sop, SkillsManager, validate_skill_steps
 from ..tracker import RunTracker
-from ..tracker.models import StepRecord
 from ..config import SKILLS_DIR
-from .base import execute_step, log_step_call, log_step_result, log_step_error
+from .checkpoint_strategies import get_resume_strategy
+
+from ..tracker.models import StepRecord
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -23,21 +25,24 @@ async def resume_run(
     tracker: Optional[RunTracker] = None,
     event_broadcaster: EventBroadcaster = None,
     mcp_pool: Optional[MCPConnectionPool] = None,
+    checkpoint_id: Optional[str] = None,
+    backend: Optional[StateBackend] = None,
 ):
-    """从某个 run 的最新检查点恢复执行.
+    """从某个 run 的检查点恢复执行.
 
-    工作流程：
-    1. 加载原 run 记录和最新 checkpoint
-    2. 创建新 run，标记 resumed_from=原run_id
-    3. 从 checkpoint 的 step_index 开始继续执行
+    若指定 checkpoint_id，则精确加载该检查点；否则使用最新检查点。
     """
-    cp_mgr = CheckpointManager()
-    cp = cp_mgr.get_latest_checkpoint(run_id)
+    backend = backend or get_state_backend()
+    cp_mgr = CheckpointManager(backend=backend)
+    if checkpoint_id:
+        cp = await cp_mgr.load_checkpoint(checkpoint_id)
+    else:
+        cp = await cp_mgr.get_latest_checkpoint(run_id)
     if not cp:
         logger.error(f"Run {run_id} 没有找到检查点，无法恢复")
         return
 
-    orig_run = RunTracker.load_run(run_id)
+    orig_run = await RunTracker.load_run(run_id, backend=backend)
     if not orig_run:
         logger.error(f"找不到原始执行记录: {run_id}")
         return
@@ -51,40 +56,36 @@ async def resume_run(
         logger.error(f"找不到 Skill: {skill_name}")
         return
 
+    # 解析 SOP 步骤（用于顺序/并行恢复）
     raw_sop = sm.activate_skill(skill_name)
     rendered_sop = render_sop(raw_sop, variables)
     steps = parse_sop_steps(rendered_sop, sm=sm, variables=variables)
     if not steps:
-        logger.warning("未从 SOP 中解析出任何工具调用步骤")
-        return
-
-    if cp.step_status == "after_step":
-        resume_from = cp.step_index + 1
-    else:
-        resume_from = cp.step_index
-
-    if resume_from > len(steps):
-        logger.info("所有步骤已执行完毕，无需恢复")
-        return
+        logger.warning("未从 SOP 中解析出任何工具调用步骤（Agent 恢复可能不需要）")
 
     logger.info("=" * 60)
     logger.info("🔄 Resume 模式: 从检查点恢复执行")
     logger.info(f"   原 Run ID: {run_id}")
     logger.info(f"   Checkpoint: {cp.checkpoint_id} (step={cp.step_index}, status={cp.step_status})")
-    logger.info(f"   将从步骤 {resume_from} 继续执行")
     logger.info("=" * 60)
 
     async def _execute(session):
-        result = await session.list_tools()
-        validate_skill_steps(steps, result.tools)
-        t = tracker or RunTracker(skill_name, mode="resume", variables=variables)
+        if steps:
+            result = await session.list_tools()
+            validate_skill_steps(steps, result.tools)
+
+        t = tracker or RunTracker(
+            skill_name, mode="resume", variables=variables, backend=backend
+        )
         if tracker is None:
             async with t:
                 t.record.resumed_from = run_id
-                await _run_resume(t, session, steps, resume_from, cp, event_broadcaster)
+                strategy = get_resume_strategy(cp.executor_state)
+                await strategy.resume(t, session, cp, steps, event_broadcaster, mcp_pool=mcp_pool)
         else:
             tracker.record.resumed_from = run_id
-            await _run_resume(tracker, session, steps, resume_from, cp, event_broadcaster)
+            strategy = get_resume_strategy(cp.executor_state)
+            await strategy.resume(tracker, session, cp, steps, event_broadcaster, mcp_pool=mcp_pool)
 
     if mcp_pool is not None:
         await _execute(mcp_pool.session)
@@ -93,39 +94,20 @@ async def resume_run(
             await _execute(session)
 
 
-async def _run_resume(
-    tracker: RunTracker,
-    session,
-    steps: list,
-    resume_from: int,
-    cp,
-    event_broadcaster: EventBroadcaster,
-):
-    logger.info(f"   新 Run ID: {tracker.record.run_id}")
-
-    for sr_dict in cp.step_results:
-        if sr_dict["step_index"] < resume_from and sr_dict["status"] == "success":
-            old_step = StepRecord.from_dict(sr_dict)
-            tracker.record.steps.append(old_step)
-
-    for idx in range(resume_from, len(steps) + 1):
-        step = steps[idx - 1]
-        tool_name = step["tool_name"]
-        arguments = step["arguments"]
-
-        step_rec = tracker.start_step(idx, tool_name, arguments)
-        log_step_call(idx, tool_name, arguments)
-
-        try:
-            text = await execute_step(
-                session, tracker, step_rec, tool_name, arguments,
-                event_broadcaster=event_broadcaster,
-            )
-            log_step_result(text)
-        except Exception as e:
-            log_step_error(e)
-            break
-
-    logger.info("=" * 60)
-    logger.info(f"🎉 恢复执行完毕！{tracker.record.skill_name} 已完成~")
-    logger.info("=" * 60)
+def _seed_completed_steps(tracker: RunTracker, cp, steps: List[dict]):
+    """将检查点中已完成的步骤种子恢复到新 tracker 中."""
+    tracker.record.variables = cp.variables
+    completed_indices = set()
+    for step_dict in cp.step_results:
+        step_index = step_dict.get("step_index")
+        status = step_dict.get("status")
+        if status == "success" and step_index is not None:
+            completed_indices.add(step_index)
+    for step_dict in cp.step_results:
+        step_index = step_dict.get("step_index")
+        if step_index in completed_indices:
+            try:
+                tracker.record.steps.append(StepRecord.from_dict(step_dict))
+            except Exception:
+                logger.warning(f"无法恢复步骤记录: {step_dict}")
+    logger.info(f"   已恢复 {len(tracker.record.steps)} 个已完成步骤")

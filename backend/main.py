@@ -9,6 +9,7 @@ Usage:
     python main.py --resumable                    # 可续作模式（自动保存检查点）
     python main.py --resume abc123                # 从检查点恢复执行
     python main.py --rollback abc123 --to-step 3  # 回滚到步骤3重新执行
+    python main.py --rollback abc123 --to-step 3 --compensate  # 补偿回滚
     python main.py --demo --var egg_count=5       # 传入变量覆盖默认值
     python main.py --list-runs                    # 查看最近执行记录
     python main.py --replay abc123                # 回放某次执行
@@ -16,6 +17,10 @@ Usage:
 
 配置:
     在项目根目录创建 .env 文件（参考 .env.example）
+    支持分布式状态后端：
+      - local_json（默认）
+      - S3：设置 KITCHEN_STATE_BACKEND=s3 及 KITCHEN_S3_BUCKET/AWS 凭证
+      - Redis：设置 KITCHEN_STATE_BACKEND=redis 及 KITCHEN_REDIS_URL
 """
 
 import asyncio
@@ -30,8 +35,9 @@ from kitchen_sop.skill import (
     preview_skill_draft,
     save_skill,
 )
+from kitchen_sop.tracker.state_backend import get_state_backend
 from cli import build_parser, _parse_var_args
-from commands import list_runs_command, replay_run_command
+from commands import _list_runs_async, _replay_run_async
 from router import resolve_mode, route_execution, route_resume_rollback
 
 # 加载 .env（只需在入口处执行一次）
@@ -120,13 +126,15 @@ async def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    backend = get_state_backend()
+
     # --- 查询类命令（不启动执行） ---
     if args.list_runs:
-        list_runs_command()
+        await _list_runs_async(backend=backend)
         return
 
     if args.replay:
-        replay_run_command(args.replay)
+        await _replay_run_async(args.replay, backend=backend)
         return
 
     # --- Skill 生成向导 ---
@@ -135,7 +143,7 @@ async def main():
         return
 
     # --- Resume / Rollback（不需要 skill 参数，从记录中推断） ---
-    if await route_resume_rollback(args):
+    if await route_resume_rollback(args, backend=backend):
         return
 
     # --- 正常执行模式 ---
@@ -145,7 +153,7 @@ async def main():
     mode = resolve_mode(args)
 
     # 2. 执行路由
-    await route_execution(mode, args.skill, variables, args.model)
+    await route_execution(mode, args.skill, variables, args.model, args.enable_checkpoint)
 
 
 if __name__ == "__main__":

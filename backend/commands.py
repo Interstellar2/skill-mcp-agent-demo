@@ -1,6 +1,9 @@
 """查询类命令实现."""
 
+import asyncio
+
 from kitchen_sop.tracker import RunTracker
+from kitchen_sop.tracker.state_backend import get_state_backend
 
 
 def _print_run(run):
@@ -35,9 +38,11 @@ def _print_run(run):
     print("-" * 60)
 
 
-def list_runs_command():
-    """列出最近执行记录."""
-    runs = RunTracker.list_runs(limit=20)
+async def _list_runs_async(backend=None):
+    """异步列出最近执行记录."""
+    if backend is None:
+        backend = get_state_backend()
+    runs = await RunTracker.list_runs(limit=20, backend=backend)
     if not runs:
         print("暂无执行记录。")
         return
@@ -49,10 +54,22 @@ def list_runs_command():
         )
 
 
-def replay_run_command(run_id: str):
-    """回放某次历史执行."""
-    run = RunTracker.load_run(run_id)
+def list_runs_command():
+    """列出最近执行记录."""
+    asyncio.run(_list_runs_async())
+
+
+async def _replay_run_async(run_id: str, backend=None):
+    """异步回放某次历史执行."""
+    if backend is None:
+        backend = get_state_backend()
+    run = await RunTracker.load_run(run_id, backend=backend)
     if not run:
         print(f"未找到执行记录: {run_id}")
         return
     _print_run(run)
+
+
+def replay_run_command(run_id: str):
+    """回放某次历史执行."""
+    asyncio.run(_replay_run_async(run_id))

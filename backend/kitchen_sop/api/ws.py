@@ -4,6 +4,9 @@ from typing import Dict, List
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ..events import EventType
+from ..tracker.state_backend import get_state_backend
+
 router = APIRouter()
 
 _connections: Dict[str, List[WebSocket]] = {}
@@ -46,17 +49,18 @@ async def ws_run(websocket: WebSocket, run_id: str):
     try:
         from ..tracker import RunTracker
 
-        run = RunTracker.load_run(run_id)
+        backend = get_state_backend()
+        run = await RunTracker.load_run(run_id, backend=backend)
         if run:
-            await websocket.send_json({"type": "init", "run": run.to_dict()})
+            await websocket.send_json({"type": EventType.INIT.value, "run": run.to_dict()})
         else:
-            await websocket.send_json({"type": "init", "run": None})
+            await websocket.send_json({"type": EventType.INIT.value, "run": None})
 
         while True:
             msg = await websocket.receive_json()
             msg_type = msg.get("type")
             if msg_type == "ping":
-                await websocket.send_json({"type": "pong"})
+                await websocket.send_json({"type": EventType.PONG.value})
             elif msg_type == "hitl_approval":
                 from .orchestrator import _active_runs
 
@@ -66,10 +70,10 @@ async def ws_run(websocket: WebSocket, run_id: str):
                         msg.get("decision"),
                         msg.get("modified_arguments"),
                     )
-                    await websocket.send_json({"type": "hitl_approval_ack"})
+                    await websocket.send_json({"type": EventType.HITL_APPROVAL_ACK.value})
                 else:
                     await websocket.send_json(
-                        {"type": "error", "message": "No pending HITL for this run"}
+                        {"type": EventType.ERROR.value, "message": "No pending HITL for this run"}
                     )
     except WebSocketDisconnect:
         pass

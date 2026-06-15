@@ -1,14 +1,16 @@
-"""回滚到指定步骤重新执行."""
+"""回滚到指定步骤重新执行（orchestrator，使用策略模式）."""
 
 import logging
 from typing import Awaitable, Callable, Optional
 
+from ..tracker.checkpoint import CheckpointManager
+from ..tracker.state_backend import StateBackend, get_state_backend
 from ..mcp_client import get_mcp_tools
 from ..mcp_pool import MCPConnectionPool
 from ..skill import parse_sop_steps, render_sop, SkillsManager, validate_skill_steps
 from ..tracker import RunTracker
 from ..config import SKILLS_DIR
-from .base import execute_step, log_step_call, log_step_result, log_step_error
+from .checkpoint_strategies import get_rollback_strategy
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -22,21 +24,32 @@ async def rollback_run(
     tracker: Optional[RunTracker] = None,
     event_broadcaster: EventBroadcaster = None,
     mcp_pool: Optional[MCPConnectionPool] = None,
+    checkpoint_id: Optional[str] = None,
+    compensate: bool = False,
+    backend: Optional[StateBackend] = None,
 ):
     """回滚到指定步骤重新执行.
 
-    工作流程：
-    1. 加载原 run 记录
-    2. 创建新 run，标记 resumed_from=原run_id, rollback_to_step=to_step
-    3. 从步骤 to_step 开始重新执行所有后续步骤
+    若指定 checkpoint_id，则使用 checkpoint 中的 variables 作为起始状态；
+    否则使用原 run 的初始 variables。
     """
-    orig_run = RunTracker.load_run(run_id)
+    backend = backend or get_state_backend()
+    orig_run = await RunTracker.load_run(run_id, backend=backend)
     if not orig_run:
         logger.error(f"找不到原始执行记录: {run_id}")
         return
 
     skill_name = orig_run.skill_name
-    variables = orig_run.variables or {}
+
+    if checkpoint_id:
+        cp = await CheckpointManager(backend=backend).load_checkpoint(checkpoint_id)
+        if not cp:
+            logger.error(f"找不到检查点: {checkpoint_id}")
+            return
+        variables = cp.variables
+        logger.info(f"   使用 Checkpoint: {cp.checkpoint_id} 作为起始状态")
+    else:
+        variables = orig_run.variables or {}
 
     sm = SkillsManager(skills_dir or SKILLS_DIR)
     skill = sm.skills.get(skill_name)
@@ -69,51 +82,22 @@ async def rollback_run(
             skill_name,
             mode="rollback",
             variables=variables,
+            backend=backend,
         )
         if tracker is None:
             async with t:
                 t.record.resumed_from = run_id
                 t.record.rollback_to_step = to_step
-                await _run_rollback(t, session, steps, to_step, event_broadcaster)
+                strategy = get_rollback_strategy(compensate)
+                await strategy.rollback(t, session, steps, to_step, event_broadcaster, orig_steps=orig_run.steps)
         else:
             tracker.record.resumed_from = run_id
             tracker.record.rollback_to_step = to_step
-            await _run_rollback(tracker, session, steps, to_step, event_broadcaster)
+            strategy = get_rollback_strategy(compensate)
+            await strategy.rollback(tracker, session, steps, to_step, event_broadcaster, orig_steps=orig_run.steps)
 
     if mcp_pool is not None:
         await _execute(mcp_pool.session)
     else:
         async with get_mcp_tools() as (tools, session):
             await _execute(session)
-
-
-async def _run_rollback(
-    tracker: RunTracker,
-    session,
-    steps: list,
-    to_step: int,
-    event_broadcaster: EventBroadcaster,
-):
-    logger.info(f"   新 Run ID: {tracker.record.run_id}")
-
-    for idx in range(to_step, len(steps) + 1):
-        step = steps[idx - 1]
-        tool_name = step["tool_name"]
-        arguments = step["arguments"]
-
-        step_rec = tracker.start_step(idx, tool_name, arguments)
-        log_step_call(idx, tool_name, arguments)
-
-        try:
-            text = await execute_step(
-                session, tracker, step_rec, tool_name, arguments,
-                event_broadcaster=event_broadcaster,
-            )
-            log_step_result(text)
-        except Exception as e:
-            log_step_error(e)
-            break
-
-    logger.info("=" * 60)
-    logger.info(f"🎉 回滚重执行完毕！{tracker.record.skill_name} 已完成~")
-    logger.info("=" * 60)

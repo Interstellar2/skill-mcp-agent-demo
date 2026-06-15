@@ -72,6 +72,8 @@ def parse_sop_steps(
         if tool_match:
             tool_name = tool_match.group(1)
             arguments = {}
+            output_variable = None
+            compensator = None
             markers = _parse_parallel_markers(line)
             i += 1
 
@@ -92,6 +94,32 @@ def parse_sop_steps(
                         key = key.strip()
                         val = val.strip().strip('"').strip("'")
                         arguments[key] = val
+                else:
+                    # 输出变量声明: **输出变量**: `variable_name`
+                    ov_match = re.match(r"\*\*输出变量\*\*:\s*`?(\w+)`?", param_line)
+                    if ov_match:
+                        output_variable = ov_match.group(1)
+                    # 补偿工具声明: **补偿工具**: `tool_name`
+                    comp_tool_match = re.match(r"\*\*补偿工具\*\*:\s*`?(\w+)`?", param_line)
+                    if comp_tool_match:
+                        compensator = {"tool_name": comp_tool_match.group(1), "arguments": {}}
+                        i += 1
+                        # 读取补偿参数
+                        while i < len(lines):
+                            comp_param_line = lines[i].strip()
+                            if not comp_param_line or comp_param_line.startswith("### ") or comp_param_line.startswith("## "):
+                                break
+                            if comp_param_line.startswith("-") and ":" in comp_param_line:
+                                comp_param_content = comp_param_line[1:].strip()
+                                if ":" in comp_param_content:
+                                    ckey, cval = comp_param_content.split(":", 1)
+                                    ckey = ckey.strip()
+                                    cval = cval.strip().strip('"').strip("'")
+                                    compensator["arguments"][ckey] = cval
+                            else:
+                                break
+                            i += 1
+                        continue
                 i += 1
 
             # 尝试类型转换
@@ -106,12 +134,27 @@ def parse_sop_steps(
                     except ValueError:
                         pass
 
+            # 补偿参数类型转换
+            if compensator:
+                for key, val in compensator["arguments"].items():
+                    if val.lower() == "true":
+                        compensator["arguments"][key] = True
+                    elif val.lower() == "false":
+                        compensator["arguments"][key] = False
+                    else:
+                        try:
+                            compensator["arguments"][key] = int(val)
+                        except ValueError:
+                            pass
+
             steps.append(
                 {
                     "tool_name": tool_name,
                     "arguments": arguments,
+                    "output_variable": output_variable,
                     "parallel_group_id": markers["parallel_group_id"],
                     "depends_on": markers["depends_on"],
+                    "compensator": compensator,
                 }
             )
             continue

@@ -27,6 +27,7 @@ from .schemas import (
     StartRunResponse,
     ToolOut,
 )
+from ..tracker.state_backend import get_state_backend
 from .orchestrator import (
     _active_runs,
     rollback_run_web,
@@ -109,20 +110,23 @@ async def create_run(req: StartRunRequest):
         mode=req.mode,
         variables=req.variables,
         model=req.model,
+        enable_checkpoint=req.enable_checkpoint or False,
     )
     return StartRunResponse(run_id=run_id)
 
 
 @router.get("/runs", response_model=List[RunRecordOut])
 async def list_runs(limit: int = 20, offset: int = 0):
-    runs = RunTracker.list_runs(limit=limit + offset)
+    backend = get_state_backend()
+    runs = await RunTracker.list_runs(limit=limit + offset, backend=backend)
     runs = runs[offset:]
     return [RunRecordOut(**r.to_dict()) for r in runs]
 
 
 @router.get("/runs/{run_id}", response_model=RunRecordOut)
 async def get_run(run_id: str):
-    run = RunTracker.load_run(run_id)
+    backend = get_state_backend()
+    run = await RunTracker.load_run(run_id, backend=backend)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return RunRecordOut(**run.to_dict())
@@ -136,7 +140,12 @@ async def resume_run_endpoint(run_id: str, req: ResumeRequest):
 
 @router.post("/runs/{run_id}/rollback")
 async def rollback_run_endpoint(run_id: str, req: RollbackRequest):
-    new_run_id = await rollback_run_web(run_id, to_step=req.to_step)
+    new_run_id = await rollback_run_web(
+        run_id,
+        to_step=req.to_step,
+        checkpoint_id=req.checkpoint_id,
+        compensate=req.compensate or False,
+    )
     return {"run_id": new_run_id}
 
 
@@ -153,8 +162,8 @@ async def approve_run(run_id: str, req: HITLApprovalRequest):
 
 @router.get("/runs/{run_id}/checkpoints", response_model=List[CheckpointOut])
 async def list_checkpoints(run_id: str):
-    cp_mgr = CheckpointManager()
-    cps = cp_mgr.list_checkpoints(run_id)
+    cp_mgr = CheckpointManager(backend=get_state_backend())
+    cps = await cp_mgr.list_checkpoints(run_id)
     return [CheckpointOut(**cp.to_dict()) for cp in cps]
 
 
