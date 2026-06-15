@@ -56,7 +56,7 @@ const totalErrors = computed(() => {
   overflow-y: auto;
   padding: 20px;
   background: #fff;
-  border-right: 1px solid #e2e8f0;
+  border-radius: 12px;
 }
 .loading, .empty {
   color: #64748b;

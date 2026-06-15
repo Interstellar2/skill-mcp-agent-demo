@@ -102,4 +102,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="RUN_ID",
         help="回放某次历史执行（不调用真实工具）",
     )
+    parser.add_argument(
+        "--generate-skill",
+        action="store_true",
+        dest="generate_skill",
+        help="交互式生成新的 Skill（需要 OPENAI_API_KEY）",
+    )
     return parser

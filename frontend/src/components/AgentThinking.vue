@@ -31,8 +31,6 @@ const collapsed = ref(true)
 
 <style scoped>
 .agent-thinking {
-  width: 280px;
-  border-left: 1px solid #e2e8f0;
   display: flex;
   flex-direction: column;
   overflow: hidden;

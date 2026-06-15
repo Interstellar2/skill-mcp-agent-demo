@@ -93,3 +93,42 @@ export interface SkillValidationResult {
   errors: string[];
   step_errors: { step_index: number | null; message: string }[];
 }
+
+export interface SkillGenerateDraftRequest {
+  prompt: string;
+  model?: string;
+}
+
+export interface SkillGenerateDraftResponse {
+  draft_markdown: string;
+}
+
+export interface SkillPreviewRequest {
+  draft_markdown: string;
+}
+
+export interface ParsedStep {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  parallel_group_id?: string | null;
+  depends_on?: string[];
+}
+
+export interface SkillPreviewResponse {
+  metadata: Record<string, unknown>;
+  steps: ParsedStep[];
+  errors: string[];
+  step_errors: { step_index: number | null; message: string }[];
+  valid: boolean;
+}
+
+export interface SkillSaveRequest {
+  name: string;
+  draft_markdown: string;
+  overwrite?: boolean;
+}
+
+export interface SkillSaveResponse {
+  path: string;
+  name: string;
+}

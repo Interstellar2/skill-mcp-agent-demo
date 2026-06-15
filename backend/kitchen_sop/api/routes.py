@@ -15,7 +15,13 @@ from .schemas import (
     RollbackRequest,
     RunRecordOut,
     SkillDetailOut,
+    SkillGenerateDraftRequest,
+    SkillGenerateDraftResponse,
     SkillMetaOut,
+    SkillPreviewRequest,
+    SkillPreviewResponse,
+    SkillSaveRequest,
+    SkillSaveResponse,
     SkillValidationOut,
     StartRunRequest,
     StartRunResponse,
@@ -29,12 +35,16 @@ from .orchestrator import (
 )
 from ..mcp_pool import get_mcp_pool
 from ..skill import (
+    SkillGenerationError,
     SkillValidationError,
     validate_skill_metadata_tools,
     validate_skill_steps,
     render_sop,
     _resolve_variables,
     parse_sop_steps,
+    generate_skill_draft,
+    preview_skill_draft,
+    save_skill,
 )
 
 router = APIRouter()
@@ -216,3 +226,67 @@ async def validate_skill(skill_name: str):
         errors=errors,
         step_errors=step_errors,
     )
+
+
+@router.post("/skills/generate/draft", response_model=SkillGenerateDraftResponse)
+async def generate_draft(req: SkillGenerateDraftRequest):
+    pool = get_mcp_pool()
+    mcp_tools_result = await pool.session.list_tools()
+    mcp_tools = mcp_tools_result.tools
+
+    try:
+        draft = await generate_skill_draft(
+            prompt=req.prompt,
+            model=req.model,
+            mcp_tools=mcp_tools,
+        )
+    except SkillGenerationError as e:
+        msg = str(e)
+        if "OPENAI_API_KEY" in msg:
+            raise HTTPException(status_code=503, detail=msg)
+        raise HTTPException(status_code=500, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成草稿失败: {e}")
+
+    return SkillGenerateDraftResponse(draft_markdown=draft)
+
+
+@router.post("/skills/generate/preview", response_model=SkillPreviewResponse)
+async def preview_draft(req: SkillPreviewRequest):
+    sm = SkillsManager(SKILLS_DIR)
+    pool = get_mcp_pool()
+    mcp_tools_result = await pool.session.list_tools()
+    mcp_tools = mcp_tools_result.tools
+
+    try:
+        preview = preview_skill_draft(
+            markdown=req.draft_markdown,
+            sm=sm,
+            mcp_tools=mcp_tools,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"预览解析失败: {e}")
+
+    return SkillPreviewResponse(**preview)
+
+
+@router.post("/skills/generate/save", response_model=SkillSaveResponse)
+async def save_draft(req: SkillSaveRequest):
+    try:
+        path = save_skill(
+            name=req.name,
+            markdown=req.draft_markdown,
+            skills_dir=SKILLS_DIR,
+            overwrite=req.overwrite,
+        )
+    except SkillGenerationError as e:
+        msg = str(e)
+        if "已存在" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        if "非法" in msg:
+            raise HTTPException(status_code=400, detail=msg)
+        raise HTTPException(status_code=500, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"保存失败: {e}")
+
+    return SkillSaveResponse(path=str(path), name=req.name)

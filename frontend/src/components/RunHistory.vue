@@ -1,6 +1,11 @@
 <template>
   <div class="run-history">
-    <h3 class="header">Run History</h3>
+    <div class="header">
+      <span>Run History</span>
+      <button class="refresh-btn" :disabled="loading" @click="loadRuns" title="刷新">
+        <span :class="{ spin: loading }">↻</span>
+      </button>
+    </div>
     <div class="list">
       <div
         v-for="run in runs"
@@ -16,9 +21,10 @@
         <div class="run-meta">
           {{ run.skill_name }} · {{ run.mode }}
         </div>
-        <div class="run-time">{{ run.started_at }}</div>
+        <div class="run-time">{{ formatTime(run.started_at) }}</div>
       </div>
-      <div v-if="runs.length === 0" class="empty">No runs yet</div>
+      <div v-if="runs.length === 0 && !loading" class="empty">No runs yet</div>
+      <div v-if="error" class="error">{{ error }}</div>
     </div>
   </div>
 </template>
@@ -31,14 +37,37 @@ import type { APIRun } from '../types'
 
 const runStore = useRunStore()
 const runs = ref<APIRun[]>([])
+const loading = ref(false)
+const error = ref<string | null>(null)
 
 async function loadRuns() {
-  runs.value = await fetchRuns()
+  loading.value = true
+  error.value = null
+  try {
+    runs.value = await fetchRuns()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    loading.value = false
+  }
 }
 
 async function selectRun(runId: string) {
-  const run = await fetchRun(runId)
-  runStore.setActiveRun(run)
+  error.value = null
+  try {
+    const run = await fetchRun(runId)
+    runStore.setActiveRun(run)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function formatTime(iso: string) {
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
+  }
 }
 
 onMounted(() => {
@@ -55,28 +84,60 @@ onMounted(() => {
 .header {
   margin: 0;
   padding: 12px 16px;
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 700;
   border-bottom: 1px solid #e2e8f0;
   background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.refresh-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #64748b;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.refresh-btn:hover:not(:disabled) {
+  background: #e2e8f0;
+  color: #334155;
+}
+.refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.spin {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 .list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 10px;
 }
 .run-item {
-  padding: 10px 12px;
+  padding: 12px;
   border-radius: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   cursor: pointer;
   border: 1px solid transparent;
+  background: #fff;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 .run-item:hover {
-  background: #f1f5f9;
+  background: #f8fafc;
+  border-color: #cbd5e1;
 }
 .run-item.active {
   background: #eff6ff;
-  border-color: #bfdbfe;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px #3b82f6;
 }
 .run-top {
   display: flex;
@@ -87,14 +148,16 @@ onMounted(() => {
   font-family: ui-monospace, monospace;
   font-size: 12px;
   color: #334155;
+  font-weight: 600;
 }
 .run-status {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
   background: #e2e8f0;
   color: #475569;
   text-transform: uppercase;
+  font-weight: 700;
 }
 .run-status.success {
   background: #dcfce7;
@@ -104,19 +167,32 @@ onMounted(() => {
   background: #fee2e2;
   color: #991b1b;
 }
+.run-status.pending {
+  background: #fef3c7;
+  color: #92400e;
+}
 .run-meta {
   font-size: 12px;
   color: #64748b;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 .run-time {
   font-size: 11px;
   color: #94a3b8;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 .empty {
   color: #94a3b8;
-  padding: 20px;
+  padding: 32px 0;
   text-align: center;
+  font-size: 13px;
+}
+.error {
+  color: #991b1b;
+  background: #fee2e2;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  margin-top: 8px;
 }
 </style>

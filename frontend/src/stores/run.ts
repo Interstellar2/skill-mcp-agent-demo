@@ -20,11 +20,37 @@ export const useRunStore = defineStore('run', () => {
 
   function setActiveRun(run: APIRun | null) {
     activeRun.value = run
-    executionStatus.value = run ? (run.overall_status === 'pending' ? 'running' : (run.overall_status as ExecutionStatus)) : 'idle'
+    if (!run) {
+      executionStatus.value = 'idle'
+      return
+    }
+
+    executionStatus.value = run.overall_status === 'pending' ? 'running' : (run.overall_status as ExecutionStatus)
+
     if (run?.steps) {
+      stepStatusMap.value = {}
       run.steps.forEach(s => {
         stepStatusMap.value[s.step_index] = s.status
       })
+    }
+
+    // 如果是历史 run（非当前正在执行的），用步骤数据重建日志，让用户能看到回放
+    if (run.overall_status !== 'pending') {
+      clearLogs()
+      addLog(0, `加载历史运行: ${run.run_id} (${run.skill_name} / ${run.mode})`, 'info')
+      run.steps?.forEach(s => {
+        const level: 'success' | 'error' | 'info' =
+          s.status === 'success' ? 'success' : s.status === 'error' ? 'error' : 'info'
+        addLog(s.step_index, `步骤 ${s.step_index}: ${s.tool_name} - ${s.status}`, level)
+        if (s.result_text) {
+          addLog(s.step_index, `  结果: ${s.result_text}`, 'success')
+        }
+        if (s.error_message) {
+          addLog(s.step_index, `  错误: ${s.error_message}`, 'error')
+        }
+      })
+      const finalLevel: 'success' | 'error' = run.overall_status === 'success' ? 'success' : 'error'
+      addLog(0, `运行结束: ${run.overall_status}`, finalLevel)
     }
   }
 

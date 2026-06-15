@@ -1,5 +1,11 @@
 """Skill 解析与加载领域包."""
 
+from .generator import (
+    generate_skill_draft,
+    preview_skill_draft,
+    save_skill,
+    SkillGenerationError,
+)
 from .manager import Skill, SkillsManager
 from .parser import parse_sop_steps
 from .reference import ReferenceLoader
@@ -24,4 +30,8 @@ __all__ = [
     "SkillValidationError",
     "validate_skill_metadata_tools",
     "validate_skill_steps",
+    "generate_skill_draft",
+    "preview_skill_draft",
+    "save_skill",
+    "SkillGenerationError",
 ]

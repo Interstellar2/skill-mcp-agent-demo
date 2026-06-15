@@ -1,4 +1,4 @@
-import type { APISkillMeta, Skill, APIRun, StartRunRequest, ToolInfo, SkillValidationResult } from '../types'
+import type { APISkillMeta, Skill, APIRun, StartRunRequest, ToolInfo, SkillValidationResult, SkillGenerateDraftRequest, SkillGenerateDraftResponse, SkillPreviewRequest, SkillPreviewResponse, SkillSaveRequest, SkillSaveResponse } from '../types'
 
 const API_BASE = '/api'
 
@@ -9,6 +9,30 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(err || res.statusText)
   }
   return res.json()
+}
+
+export async function generateSkillDraft(req: SkillGenerateDraftRequest): Promise<SkillGenerateDraftResponse> {
+  return apiFetch('/skills/generate/draft', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+}
+
+export async function previewSkillDraft(req: SkillPreviewRequest): Promise<SkillPreviewResponse> {
+  return apiFetch('/skills/generate/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+}
+
+export async function saveSkillDraft(req: SkillSaveRequest): Promise<SkillSaveResponse> {
+  return apiFetch('/skills/generate/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
 }
 
 export async function fetchSkills(): Promise<APISkillMeta[]> {

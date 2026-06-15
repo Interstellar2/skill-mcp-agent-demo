@@ -102,3 +102,35 @@ class SkillValidationOut(BaseModel):
     valid: bool
     errors: List[str] = []
     step_errors: List[SkillValidationErrorItem] = []
+
+
+class SkillGenerateDraftRequest(BaseModel):
+    prompt: str
+    model: Optional[str] = None
+
+
+class SkillGenerateDraftResponse(BaseModel):
+    draft_markdown: str
+
+
+class SkillPreviewRequest(BaseModel):
+    draft_markdown: str
+
+
+class SkillPreviewResponse(BaseModel):
+    metadata: Dict[str, Any] = {}
+    steps: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    step_errors: List[SkillValidationErrorItem] = []
+    valid: bool = False
+
+
+class SkillSaveRequest(BaseModel):
+    name: str
+    draft_markdown: str
+    overwrite: bool = False
+
+
+class SkillSaveResponse(BaseModel):
+    path: str
+    name: str
