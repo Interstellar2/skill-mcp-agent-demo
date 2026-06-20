@@ -10,6 +10,8 @@ class SkillMetaOut(BaseModel):
     variables: Dict[str, Any] = {}
     steps_count: int = 0
     metadata: Dict[str, Any] = {}
+    gotchas: List[str] = []
+    reference_files: List[str] = []
 
 
 class SkillDetailOut(BaseModel):
@@ -19,6 +21,8 @@ class SkillDetailOut(BaseModel):
     steps: List[Dict[str, Any]] = []
     hitl_config: List[Dict[str, Any]] = []
     variables: Dict[str, Any] = {}
+    gotchas: List[str] = []
+    reference_files: List[str] = []
 
 
 class StartRunRequest(BaseModel):
@@ -143,3 +147,11 @@ class SkillSaveRequest(BaseModel):
 class SkillSaveResponse(BaseModel):
     path: str
     name: str
+
+
+class SkillAnalyticsOut(BaseModel):
+    skill_name: str
+    invocations: int = 0
+    successes: int = 0
+    failures: int = 0
+    last_run_at: Optional[str] = None

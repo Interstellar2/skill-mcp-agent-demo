@@ -19,6 +19,7 @@ from ..executors.parallel import run_parallel_mode
 from ..executors.resumable import run_resumable_mode
 from ..executors.resume import resume_run
 from ..executors.rollback import rollback_run
+from ..tracker.analytics import AnalyticsTracker
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -73,6 +74,15 @@ async def launch_run(
             tracker.record.overall_status = "error"
         finally:
             await tracker.__aexit__(None, None, None)
+            try:
+                success = tracker.record.overall_status == "success"
+                AnalyticsTracker().record_invocation(
+                    tracker.record.skill_name,
+                    tracker.record.mode,
+                    success,
+                )
+            except Exception:
+                logger.exception("记录调用统计失败")
             await broadcaster(
                 EventType.RUN_COMPLETE.value,
                 {"run_id": tracker.record.run_id, "status": tracker.record.overall_status},

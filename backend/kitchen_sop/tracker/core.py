@@ -45,10 +45,12 @@ class RunTracker:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self.record.ended_at = datetime.now().isoformat(timespec="seconds")
-        if exc_type is not None:
-            self.record.overall_status = "error"
-        else:
-            self.record.overall_status = "success"
+        # 只有当状态尚未被外部显式设置时，才根据异常类型判断
+        if self.record.overall_status not in ("success", "error"):
+            if exc_type is not None:
+                self.record.overall_status = "error"
+            else:
+                self.record.overall_status = "success"
         await self._persist()
         logger.info(
             f"📊 RunTracker 结束 | run_id={self.record.run_id} | "

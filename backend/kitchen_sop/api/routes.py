@@ -14,6 +14,7 @@ from .schemas import (
     ResumeRequest,
     RollbackRequest,
     RunRecordOut,
+    SkillAnalyticsOut,
     SkillDetailOut,
     SkillGenerateDraftRequest,
     SkillGenerateDraftResponse,
@@ -35,6 +36,7 @@ from .orchestrator import (
     start_run,
 )
 from ..mcp_pool import get_mcp_pool
+from ..tracker.analytics import AnalyticsTracker
 from ..skill import (
     SkillGenerationError,
     SkillValidationError,
@@ -75,6 +77,8 @@ async def list_skills():
                 variables=skill.metadata.get("variables", {}),
                 steps_count=len(steps),
                 metadata=skill.metadata,
+                gotchas=skill.gotchas,
+                reference_files=skill.reference_files,
             )
         )
     return result
@@ -100,6 +104,8 @@ async def get_skill(skill_name: str):
         steps=steps,
         hitl_config=skill.metadata.get("human_in_the_loop", []),
         variables=skill.metadata.get("variables", {}),
+        gotchas=skill.gotchas,
+        reference_files=skill.reference_files,
     )
 
 
@@ -299,3 +305,32 @@ async def save_draft(req: SkillSaveRequest):
         raise HTTPException(status_code=500, detail=f"保存失败: {e}")
 
     return SkillSaveResponse(path=str(path), name=req.name)
+
+
+@router.get("/analytics/skills", response_model=List[SkillAnalyticsOut])
+async def list_skill_analytics():
+    stats = AnalyticsTracker().get_stats()
+    return [
+        SkillAnalyticsOut(
+            skill_name=name,
+            invocations=data["invocations"],
+            successes=data["successes"],
+            failures=data["failures"],
+            last_run_at=data["last_run_at"],
+        )
+        for name, data in stats.items()
+    ]
+
+
+@router.get("/analytics/skills/{skill_name}", response_model=SkillAnalyticsOut)
+async def get_skill_analytics(skill_name: str):
+    data = AnalyticsTracker().get_skill_stats(skill_name)
+    if data["invocations"] == 0:
+        raise HTTPException(status_code=404, detail="Skill analytics not found")
+    return SkillAnalyticsOut(
+        skill_name=skill_name,
+        invocations=data["invocations"],
+        successes=data["successes"],
+        failures=data["failures"],
+        last_run_at=data["last_run_at"],
+    )

@@ -1,9 +1,10 @@
 """Skill 预执行/后执行脚本运行器."""
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Optional
 
 
 @dataclass
@@ -14,6 +15,7 @@ class ScriptContext:
     variables: Dict[str, any] = field(default_factory=dict)
     output: str = ""
     returncode: int = 0
+    data_dir: Optional[Path] = None
 
 
 class ScriptRunner:
@@ -24,7 +26,10 @@ class ScriptRunner:
         if not script_path.exists():
             return
 
-        env = {"SKILL_NAME": ctx.skill_name}
+        env = os.environ.copy()
+        env["SKILL_NAME"] = ctx.skill_name
+        if ctx.data_dir is not None:
+            env["KITCHEN_SKILL_DATA_DIR"] = str(ctx.data_dir)
         for key, value in ctx.variables.items():
             env[f"SKILL_VAR_{key}"] = str(value)
 

@@ -1,10 +1,14 @@
 ---
 name: tomato_egg
-description: 番茄炒鸡蛋标准操作流程（SOP），指导用户完成一道经典家常菜的制作。
+description: 当用户要做番茄炒蛋、需要处理番茄和鸡蛋食材时使用。
 scripts:
   pre: scripts/pre_check.py
 templates:
   report: templates/dish_report.md
+references:
+  - egg_tips.md
+hooks:
+  - careful
 variables:
   egg_count:
     type: int
@@ -105,6 +109,13 @@ human_in_the_loop:
 - garnish: "葱花"
 
 将炒好的番茄鸡蛋盛入盘中，撒上少许葱花点缀（可选）。
+
+## 坑点清单
+
+- 蛋液没有充分搅打会导致炒蛋不够蓬松，应打到表面有细密泡沫。
+- 油温不够就下蛋液，鸡蛋会吸油变老；油温过高容易焦糊。
+- 番茄煸炒时火太大容易只出水不出沙，需用中火慢慢炒软。
+- 盐放太早会让番茄大量出水，建议在合炒后调味。
 
 ## 成功标准
 - 鸡蛋嫩滑不焦糊

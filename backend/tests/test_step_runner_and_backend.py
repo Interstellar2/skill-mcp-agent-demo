@@ -31,6 +31,10 @@ from kitchen_sop.executors.hooks import EventHook, CheckpointHook, VariableHook
 from kitchen_sop.executors.agent.message_recorder import AgentMessageRecorder
 from kitchen_sop.executors.agent.message_reconstructor import reconstruct_lc_messages
 from kitchen_sop.api.orchestrator import launch_run
+from kitchen_sop.skill import parse_gotchas, ReferenceLoader, SkillMemory
+from kitchen_sop.executors.hooks import CarefulHook, FreezeHook, SkillHookRegistry
+from kitchen_sop.executors.step_runner import StepRunner
+from kitchen_sop.tracker.analytics import AnalyticsTracker
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 
@@ -429,6 +433,150 @@ class TestLaunchRun:
             assert loaded.overall_status == "success"
 
         asyncio.run(_run())
+
+
+class TestGotchasParsing:
+    def test_parses_chinese_gotchas_section(self):
+        content = """
+## 操作步骤
+- do something
+
+## 坑点清单
+- 不要加盐太多
+- 火候要小
+
+## 成功标准
+- ok
+"""
+        gotchas = parse_gotchas(content)
+        assert gotchas == ["不要加盐太多", "火候要小"]
+
+    def test_parses_english_gotchas_section(self):
+        content = """
+## Steps
+- step 1
+
+## Gotchas
+- Don't over-salt
+- Keep heat low
+
+## Success
+- done
+"""
+        gotchas = parse_gotchas(content)
+        assert gotchas == ["Don't over-salt", "Keep heat low"]
+
+    def test_returns_empty_when_no_gotchas(self):
+        assert parse_gotchas("## Steps\n- step 1") == []
+
+
+class TestLazyReferences:
+    def test_loads_only_specified_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ref_dir = Path(tmpdir)
+            (ref_dir / "a.md").write_text("A content", encoding="utf-8")
+            (ref_dir / "b.md").write_text("B content", encoding="utf-8")
+            text = ReferenceLoader.format_for_prompt(ref_dir, files=["b.md"])
+            assert "## b.md" in text
+            assert "A content" not in text
+
+    def test_loads_all_when_files_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ref_dir = Path(tmpdir)
+            (ref_dir / "a.md").write_text("A content", encoding="utf-8")
+            text = ReferenceLoader.format_for_prompt(ref_dir)
+            assert "## a.md" in text
+
+    def test_load_by_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ref_dir = Path(tmpdir)
+            (ref_dir / "x.md").write_text("hello", encoding="utf-8")
+            assert ReferenceLoader.load_by_name(ref_dir, "x.md") == "hello"
+            assert ReferenceLoader.load_by_name(ref_dir, "missing.md") is None
+
+
+class TestSkillMemory:
+    def test_get_set_and_persist(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mem = SkillMemory("tomato_egg", data_dir=Path(tmpdir))
+            mem.set("egg_count", 5)
+            mem.touch_last_run()
+            asyncio.run(mem.save())
+
+            # 重新加载应读到已保存数据
+            mem2 = SkillMemory("tomato_egg", data_dir=Path(tmpdir))
+            assert mem2.get("egg_count") == 5
+            assert "last_run_at" in mem2._data
+
+
+class TestSkillHooks:
+    async def _run_hook(self, hook, tool_name, arguments):
+        class FakeStepRec:
+            pass
+        await hook.on_before(None, FakeStepRec(), tool_name, arguments)
+
+    def test_careful_hook_blocks_high_heat_string(self):
+        hook = CarefulHook()
+        with pytest.raises(PermissionError):
+            asyncio.run(self._run_hook(hook, "heat_pan", {"temperature": "大火"}))
+
+    def test_careful_hook_blocks_high_heat_number(self):
+        hook = CarefulHook()
+        with pytest.raises(PermissionError):
+            asyncio.run(self._run_hook(hook, "heat_pan", {"temperature": 250}))
+
+    def test_careful_hook_allows_safe_heat(self):
+        hook = CarefulHook()
+        asyncio.run(self._run_hook(hook, "heat_pan", {"temperature": "中大火"}))
+        asyncio.run(self._run_hook(hook, "heat_pan", {"temperature": 200}))
+
+    def test_freeze_hook_blocks_unallowed_tool(self):
+        hook = FreezeHook(allowed_tools=["cut_ingredient", "plate"])
+        with pytest.raises(PermissionError):
+            asyncio.run(self._run_hook(hook, "heat_pan", {"temperature": 200}))
+
+    def test_freeze_hook_allows_allowed_tool(self):
+        hook = FreezeHook(allowed_tools=["cut_ingredient", "plate"])
+        asyncio.run(self._run_hook(hook, "cut_ingredient", {"ingredient": "番茄"}))
+
+    def test_skill_hook_registry_restores_hooks(self):
+        class DummyHook:
+            pass
+
+        class FakeRunner:
+            def __init__(self):
+                self.hooks = ["a", "b"]
+
+        runner = FakeRunner()
+        registry = SkillHookRegistry(runner, [DummyHook()])
+        registry.register()
+        assert len(runner.hooks) == 3
+        registry.unregister()
+        assert runner.hooks == ["a", "b"]
+
+
+class TestAnalytics:
+    def test_records_and_aggregates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = AnalyticsTracker(data_dir=Path(tmpdir))
+            tracker.record_invocation("tomato_egg", "demo", True)
+            tracker.record_invocation("tomato_egg", "demo", False)
+            tracker.record_invocation("kung_pao_chicken", "agent", True)
+
+            stats = tracker.get_stats()
+            assert stats["tomato_egg"]["invocations"] == 2
+            assert stats["tomato_egg"]["successes"] == 1
+            assert stats["tomato_egg"]["failures"] == 1
+            assert stats["tomato_egg"]["last_run_at"] is not None
+            assert stats["kung_pao_chicken"]["invocations"] == 1
+
+            single = tracker.get_skill_stats("tomato_egg")
+            assert single["invocations"] == 2
+
+    def test_get_skill_stats_returns_empty_for_unknown(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = AnalyticsTracker(data_dir=Path(tmpdir))
+            assert tracker.get_skill_stats("unknown")["invocations"] == 0
 
 
 if __name__ == "__main__":

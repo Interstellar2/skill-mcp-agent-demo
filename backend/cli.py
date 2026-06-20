@@ -125,4 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
         dest="generate_skill",
         help="交互式生成新的 Skill（需要 OPENAI_API_KEY）",
     )
+    parser.add_argument(
+        "--skill-stats",
+        action="store_true",
+        dest="skill_stats",
+        help="查看各 Skill 的调用统计",
+    )
     return parser

@@ -8,6 +8,7 @@ from ..mcp_pool import MCPConnectionPool
 from ..tracker import RunTracker
 from .base import SkillExecutorContext, log_step_call, log_step_result, log_step_error
 from .step_runner import StepRunner, build_step_hooks
+from .hooks import skill_hooks_scope
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -46,9 +47,9 @@ async def run_demo_mode(
                     mode="demo",
                     variables=ctx.merged_vars,
                 ) as t:
-                    await _run_steps(t, session, steps, event_broadcaster, enable_checkpoint=enable_checkpoint)
+                    await _run_steps(t, session, steps, event_broadcaster, enable_checkpoint=enable_checkpoint, skill_hooks=ctx.skill_hooks)
             else:
-                await _run_steps(tracker, session, steps, event_broadcaster, enable_checkpoint=enable_checkpoint)
+                await _run_steps(tracker, session, steps, event_broadcaster, enable_checkpoint=enable_checkpoint, skill_hooks=ctx.skill_hooks)
 
         if mcp_pool is not None:
             await _execute(mcp_pool.session)
@@ -66,29 +67,32 @@ async def _run_steps(
     steps: list,
     event_broadcaster: EventBroadcaster,
     enable_checkpoint: bool = False,
+    skill_hooks=None,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
     hooks = build_step_hooks(tracker, event_broadcaster, enable_checkpoint=enable_checkpoint)
     runner = StepRunner(session, tracker, event_broadcaster, hooks=hooks)
-    for idx, step in enumerate(steps, 1):
-        tool_name = step["tool_name"]
-        arguments = step["arguments"]
-        output_variable = step.get("output_variable")
 
-        step_rec = tracker.start_step(idx, tool_name, arguments)
-        log_step_call(idx, tool_name, arguments)
+    async with skill_hooks_scope(runner, skill_hooks or []):
+        for idx, step in enumerate(steps, 1):
+            tool_name = step["tool_name"]
+            arguments = step["arguments"]
+            output_variable = step.get("output_variable")
 
-        try:
-            text = await runner.run(
-                step_rec,
-                tool_name,
-                arguments,
-                output_variable=output_variable,
-                compensator=step.get("compensator"),
-            )
-            log_step_result(text)
-        except Exception as e:
-            log_step_error(e)
+            step_rec = tracker.start_step(idx, tool_name, arguments)
+            log_step_call(idx, tool_name, arguments)
+
+            try:
+                text = await runner.run(
+                    step_rec,
+                    tool_name,
+                    arguments,
+                    output_variable=output_variable,
+                    compensator=step.get("compensator"),
+                )
+                log_step_result(text)
+            except Exception as e:
+                log_step_error(e)
 
     logger.info("=" * 60)
     logger.info(f"🎉 SOP 执行完毕！{tracker.record.skill_name} 已完成~")

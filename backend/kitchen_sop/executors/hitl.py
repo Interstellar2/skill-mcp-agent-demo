@@ -12,6 +12,7 @@ from ..tracker.models import HumanApprovalRecord
 from ..hitl_bridge import HITLBridge
 from .base import SkillExecutorContext, log_step_call, log_step_result, log_step_error
 from .step_runner import StepRunner, build_step_hooks, build_step_hooks
+from .hooks import skill_hooks_scope
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -138,9 +139,9 @@ async def run_hitl_mode(
             )
             if tracker is None:
                 async with t:
-                    await _run_hitl_steps(t, session, steps, hitl_config, event_broadcaster, hitl_bridge, enable_checkpoint=enable_checkpoint)
+                    await _run_hitl_steps(t, session, steps, hitl_config, event_broadcaster, hitl_bridge, enable_checkpoint=enable_checkpoint, skill_hooks=ctx.skill_hooks)
             else:
-                await _run_hitl_steps(t, session, steps, hitl_config, event_broadcaster, hitl_bridge, enable_checkpoint=enable_checkpoint)
+                await _run_hitl_steps(t, session, steps, hitl_config, event_broadcaster, hitl_bridge, enable_checkpoint=enable_checkpoint, skill_hooks=ctx.skill_hooks)
 
         if mcp_pool is not None:
             await _execute(mcp_pool.session)
@@ -160,78 +161,80 @@ async def _run_hitl_steps(
     event_broadcaster: EventBroadcaster,
     hitl_bridge: Optional[HITLBridge],
     enable_checkpoint: bool = False,
+    skill_hooks=None,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
     hooks = build_step_hooks(tracker, event_broadcaster, enable_checkpoint=enable_checkpoint)
     runner = StepRunner(session, tracker, event_broadcaster, hooks=hooks)
 
-    for idx, step in enumerate(steps, 1):
-        tool_name = step["tool_name"]
-        arguments = dict(step["arguments"])
-        output_variable = step.get("output_variable")
+    async with skill_hooks_scope(runner, skill_hooks or []):
+        for idx, step in enumerate(steps, 1):
+            tool_name = step["tool_name"]
+            arguments = dict(step["arguments"])
+            output_variable = step.get("output_variable")
 
-        approval_prompt = _should_request_approval(idx, tool_name, arguments, hitl_config)
-        ha = None
-
-        if approval_prompt:
-            if hitl_bridge is not None and event_broadcaster is not None:
-                await event_broadcaster(
-                    EventType.HITL_REQUEST.value,
-                    {
-                        "approval_id": hitl_bridge.approval_id,
-                        "prompt": approval_prompt,
-                        "step_index": idx,
-                        "arguments": arguments,
-                    },
-                )
-                result = await hitl_bridge.request_approval(approval_prompt, arguments)
-                decision = result["decision"]
-                modified_args = result.get("modified_arguments", {})
-
-                ha = HumanApprovalRecord(
-                    requested_at=__import__("datetime").datetime.now().isoformat(timespec="seconds"),
-                    prompt=approval_prompt,
-                    approved_at=__import__("datetime").datetime.now().isoformat(timespec="seconds"),
-                    approved_by="web_user",
-                    decision=decision,
-                    modified_arguments=modified_args if modified_args else None,
-                )
-                if decision == "rejected":
-                    step_rec = tracker.start_step(idx, tool_name, arguments)
-                    await tracker.fail_step(step_rec, error_message="用户拒绝执行此步骤")
-                    logger.error(f"   ❌ 步骤 {idx} 被用户拒绝，执行终止")
-                    break
-                elif decision == "modified" and modified_args:
-                    arguments.update(modified_args)
-            else:
-                ha = await _request_human_approval_cli(approval_prompt, arguments)
-                if ha.decision == "rejected":
-                    step_rec = tracker.start_step(idx, tool_name, arguments)
-                    await tracker.fail_step(step_rec, error_message="用户拒绝执行此步骤")
-                    logger.error(f"   ❌ 步骤 {idx} 被用户拒绝，执行终止")
-                    break
-                elif ha.decision == "modified" and ha.modified_arguments:
-                    arguments.update(ha.modified_arguments)
-        else:
+            approval_prompt = _should_request_approval(idx, tool_name, arguments, hitl_config)
             ha = None
 
-        step_rec = tracker.start_step(idx, tool_name, arguments)
-        if ha:
-            step_rec.human_approval = ha
+            if approval_prompt:
+                if hitl_bridge is not None and event_broadcaster is not None:
+                    await event_broadcaster(
+                        EventType.HITL_REQUEST.value,
+                        {
+                            "approval_id": hitl_bridge.approval_id,
+                            "prompt": approval_prompt,
+                            "step_index": idx,
+                            "arguments": arguments,
+                        },
+                    )
+                    result = await hitl_bridge.request_approval(approval_prompt, arguments)
+                    decision = result["decision"]
+                    modified_args = result.get("modified_arguments", {})
 
-        log_step_call(idx, tool_name, arguments)
+                    ha = HumanApprovalRecord(
+                        requested_at=__import__("datetime").datetime.now().isoformat(timespec="seconds"),
+                        prompt=approval_prompt,
+                        approved_at=__import__("datetime").datetime.now().isoformat(timespec="seconds"),
+                        approved_by="web_user",
+                        decision=decision,
+                        modified_arguments=modified_args if modified_args else None,
+                    )
+                    if decision == "rejected":
+                        step_rec = tracker.start_step(idx, tool_name, arguments)
+                        await tracker.fail_step(step_rec, error_message="用户拒绝执行此步骤")
+                        logger.error(f"   ❌ 步骤 {idx} 被用户拒绝，执行终止")
+                        break
+                    elif decision == "modified" and modified_args:
+                        arguments.update(modified_args)
+                else:
+                    ha = await _request_human_approval_cli(approval_prompt, arguments)
+                    if ha.decision == "rejected":
+                        step_rec = tracker.start_step(idx, tool_name, arguments)
+                        await tracker.fail_step(step_rec, error_message="用户拒绝执行此步骤")
+                        logger.error(f"   ❌ 步骤 {idx} 被用户拒绝，执行终止")
+                        break
+                    elif ha.decision == "modified" and ha.modified_arguments:
+                        arguments.update(ha.modified_arguments)
+            else:
+                ha = None
 
-        try:
-            text = await runner.run(
-                step_rec,
-                tool_name,
-                arguments,
-                output_variable=output_variable,
-                compensator=step.get("compensator"),
-            )
-            log_step_result(text)
-        except Exception as e:
-            log_step_error(e)
+            step_rec = tracker.start_step(idx, tool_name, arguments)
+            if ha:
+                step_rec.human_approval = ha
+
+            log_step_call(idx, tool_name, arguments)
+
+            try:
+                text = await runner.run(
+                    step_rec,
+                    tool_name,
+                    arguments,
+                    output_variable=output_variable,
+                    compensator=step.get("compensator"),
+                )
+                log_step_result(text)
+            except Exception as e:
+                log_step_error(e)
 
     logger.info("=" * 60)
     logger.info(f"🎉 HITL 执行完毕！{tracker.record.skill_name} 已完成~")

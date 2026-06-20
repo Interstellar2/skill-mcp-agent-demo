@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from ...tracker import RunTracker
 from ..step_runner import StepRunner
+from ..hooks import SkillHookRegistry
 from .message_recorder import AgentMessageRecorder
 
 logger = logging.getLogger("kitchen_agent")
@@ -24,12 +25,17 @@ def wrap_tools_with_step_runner(
     query: str,
     model: str,
     hooks_factory=None,
+    skill_hooks=None,
 ):
     """将 LangChain 工具实例包装为通过 StepRunner 调用的版本，并记录消息快照.
 
     Args:
         hooks_factory: 可选的 callable，接收 tracker 返回 StepRunner hooks 列表。
             用于 Agent 模式注入自定义 hooks（默认 None 使用标准 hooks）。
+        skill_hooks: 可选的 skill 级 hook 列表，会在执行期间注入 runner。
+
+    Returns:
+        (wrapped_tools, runner, registry) 元组。registry 可能为 None。
     """
     runner = StepRunner(
         session,
@@ -37,6 +43,11 @@ def wrap_tools_with_step_runner(
         event_broadcaster,
         hooks=hooks_factory(tracker) if hooks_factory else None,
     )
+
+    registry = None
+    if skill_hooks:
+        registry = SkillHookRegistry(runner, skill_hooks)
+        registry.register()
 
     def _make_tracked_arun(original_tool):
         async def tracked_arun(self, tool_input, run_manager=None):
@@ -74,4 +85,4 @@ def wrap_tools_with_step_runner(
     for tool in tools:
         tool._arun = types.MethodType(_make_tracked_arun(tool), tool)
         wrapped.append(tool)
-    return wrapped
+    return wrapped, runner, registry

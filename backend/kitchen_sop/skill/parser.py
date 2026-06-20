@@ -5,6 +5,50 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from .template import render_sop
 
+
+_GOTCHAS_HEADER_RE = re.compile(r"^##\s*(坑点清单|Gotchas)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_gotchas(sop_content: str) -> List[str]:
+    """解析 Markdown body 中的「坑点清单」/「Gotchas」部分.
+
+    匹配 `## 坑点清单` 或 `## Gotchas`（大小写不敏感），收集直到下一个
+    `## ` 标题前的列表项。
+
+    Args:
+        sop_content: SOP Markdown 内容（可包含 frontmatter）。
+
+    Returns:
+        坑点字符串列表；未找到时返回空列表。
+    """
+    match = _GOTCHAS_HEADER_RE.search(sop_content)
+    if not match:
+        return []
+
+    start = match.end()
+    remaining = sop_content[start:]
+    gotchas = []
+    for line in remaining.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            break
+        if stripped.startswith("#") and not stripped.startswith("##"):
+            # 更高层标题也视为结束
+            break
+        if stripped.startswith(("- ", "* ", "+ ")):
+            item = stripped[2:].strip()
+            if item:
+                gotchas.append(item)
+        elif re.match(r"^\d+\)\s+", stripped):
+            item = re.sub(r"^\d+\)\s+", "", stripped)
+            if item:
+                gotchas.append(item)
+    return gotchas
+
+
+if TYPE_CHECKING:
+    from .manager import SkillsManager
+
 if TYPE_CHECKING:
     from .manager import SkillsManager
 

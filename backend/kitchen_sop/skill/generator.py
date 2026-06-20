@@ -70,12 +70,14 @@ def _build_system_prompt(mcp_tools: Optional[List[Any]] = None) -> str:
 
 frontmatter 支持以下字段：
 - `name`: skill 的英文标识符，只能使用字母、数字、下划线和短横线。
-- `description`: 一句话描述该 skill 的用途。
+- `description`: 触发条件，≤250 字符，例如："当用户要做番茄炒蛋、需要处理番茄和鸡蛋食材时使用"。
 - `variables`: 可选，定义执行时可替换的变量及其默认值、类型、描述。
 - `tools`: 该 skill 会用到的 MCP 工具名列表，必须从下方“可用工具”中选择。
 - `human_in_the_loop`: 可选，需要人工确认的步骤列表，每项包含 `step` 和 `prompt`。
 - `scripts`: 可选，预执行脚本路径映射。
 - `templates`: 可选，模板文件路径映射。
+- `references`: 可选，要注入 prompt 的参考文件名列表（这些文件应放在 `references/` 目录下）。
+- `hooks`: 可选，skill 级临时 hook 列表，当前支持 `careful`（安全阻断）和 `freeze`（只读）。
 
 Markdown body 结构：
 1. 一个一级标题 `# <菜名> SOP`。
@@ -85,7 +87,8 @@ Markdown body 结构：
    - `**工具**: `<tool_name>``（工具名必须来自可用工具列表）。
    - 可选并行标记：`[parallel-group: xxx]` 或 `[depends-on: xxx]`，紧跟在工具声明行的末尾。
    - `**参数**:` 后跟 `- key: value` 列表，参数名必须符合工具 schema 的 `properties`，必填参数必须在 schema 的 `required` 中提供。
-5. `## 成功标准` 段落，列出成功标准。
+5. `## 坑点清单` 段落，列出 2-5 条该 skill 独有的、模型推断不出来的坑。
+6. `## 成功标准` 段落，列出成功标准。
 
 ## 可用工具
 
@@ -98,6 +101,9 @@ Markdown body 结构：
 3. 优先使用可用的厨房类工具（如 cut_ingredient、crack_egg、heat_pan、stir_fry、season、plate 等）来构建步骤。
 4. 不要编造不存在的工具或参数。
 5. 步骤描述要简洁、可操作，参数值使用中文或简单英文。
+6. `description` 必须写成触发条件，≤250 字符，例如："当用户要做番茄炒蛋、需要处理番茄和鸡蛋食材时使用。"
+7. Markdown body 必须包含 `## 坑点清单`，列出 2-5 条该 skill 独有的、模型推断不出来的坑。
+8. 详细参考资料不要 inline，放到 `references/` 目录，并在 frontmatter `references:` 中声明。
 
 ## 完整示例
 

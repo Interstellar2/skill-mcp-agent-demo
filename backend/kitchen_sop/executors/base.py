@@ -1,19 +1,20 @@
 """执行器共享基类与工具函数."""
 
 import logging
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Awaitable, Callable, Optional
 
 from ..skill import (
-    SkillsManager,
     parse_sop_steps,
     render_sop,
     _resolve_variables,
     render_template_file,
-    ScriptContext,
     ScriptRunner,
-    ReferenceLoader,
 )
-from ..config import SKILLS_DIR
+from ..skill.memory import SkillMemory
+from .hook_resolver import HookResolver
+from .reference_resolver import ReferenceResolver
+from .script_phase import ScriptPhase
+from .skill_loader import SkillLoader
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -23,9 +24,16 @@ EventBroadcaster = Optional[Callable[[str, dict], Awaitable[None]]]
 class SkillExecutorContext:
     """封装所有 executor 共有的 Skill setup / teardown 逻辑.
 
+    本类只做编排，具体职责委托给：
+    - SkillLoader：加载 Skill
+    - ScriptPhase：pre/post 脚本
+    - ReferenceResolver：参考资料解析
+    - HookResolver：skill 级 hook 解析
+    - SkillMemory：skill 持久记忆
+
     Usage:
         async with SkillExecutorContext(skill_name, variables=...) as ctx:
-            # ctx.skill, ctx.merged_vars, ctx.steps, ctx.rendered_sop 已就绪
+            # ctx.skill, ctx.merged_vars, ctx.steps, ctx.rendered_sop, ctx.memory 已就绪
             async with get_mcp_tools() as (tools, session):
                 async with RunTracker(...) as tracker:
                     ...
@@ -45,47 +53,57 @@ class SkillExecutorContext:
         self.need_steps = need_steps
 
         # 在 __aenter__ 中填充
-        self.sm: Optional[SkillsManager] = None
         self.skill = None
+        self.sm = None
         self.merged_vars: Optional[dict] = None
-        self.scripts_meta: Optional[dict] = None
-        self.script_runner: Optional[ScriptRunner] = None
         self.raw_sop: Optional[str] = None
         self.rendered_sop: Optional[str] = None
         self.steps: Optional[list] = None
         self.reference_text: Optional[str] = None
+        self.memory: Optional[SkillMemory] = None
+        self.skill_hooks = []
+
+        # 协作者
+        self._script_phase: Optional[ScriptPhase] = None
 
     async def __aenter__(self):
-        self.sm = SkillsManager(self.skills_dir or SKILLS_DIR)
-        self.skill = self.sm.skills.get(self.skill_name)
-        if not self.skill:
-            raise ValueError(f"找不到 Skill: {self.skill_name}")
+        # 1. 加载 Skill
+        loader = SkillLoader(self.skills_dir)
+        self.skill, self.sm = loader.load(self.skill_name)
 
-        # 合并变量
+        # 2. Skill 记忆
+        self.memory = SkillMemory(self.skill.name)
+
+        # 3. 合并变量
         self.merged_vars = _resolve_variables(
             self.skill.metadata.get("variables", {}), self.variables
         )
         if self.merged_vars:
             logger.info(f"📋 变量: {self.merged_vars}")
 
-        # Pre script
-        self.scripts_meta = self.skill.metadata.get("scripts", {})
-        self.script_runner = ScriptRunner()
-        pre_script = self.scripts_meta.get("pre")
-        if pre_script:
-            ctx = ScriptContext(self.skill.name, self.merged_vars)
-            self.script_runner.run(self.skill.dir / pre_script, ctx)
-            if ctx.output:
-                logger.info(f"   脚本输出: {ctx.output}")
+        # 4. Pre script
+        self._script_phase = ScriptPhase(
+            self.skill, ScriptRunner(), memory=self.memory
+        )
+        pre_output = self._script_phase.run_pre(self.merged_vars)
+        if pre_output:
+            logger.info(f"   脚本输出: {pre_output}")
 
-        # References
-        refs = self.skill.list_references()
+        # 5. 参考资料
+        reference_resolver = ReferenceResolver(self.skill)
+        refs = reference_resolver.list_reference_files()
         if refs:
             logger.info(
-                f"📚 已加载 {len(refs)} 篇参考资料: {', '.join(r.name for r in refs)}"
+                f"📚 Skill 参考资料目录共有 {len(refs)} 篇: {', '.join(refs)}"
+            )
+        self.reference_text = reference_resolver.resolve()
+        if self.reference_text:
+            explicit = reference_resolver.explicit_references
+            logger.info(
+                f"📚 已注入 prompt 的参考资料: {', '.join(explicit) or '全部'}"
             )
 
-        # SOP
+        # 6. SOP 渲染与步骤解析
         self.raw_sop = self.sm.activate_skill(self.skill_name)
         self.rendered_sop = render_sop(self.raw_sop, self.merged_vars)
         if self.need_steps:
@@ -95,9 +113,11 @@ class SkillExecutorContext:
             if not self.steps:
                 raise ValueError("未从 SOP 中解析出任何工具调用步骤")
 
-        self.reference_text = ReferenceLoader.format_for_prompt(self.skill.reference_dir)
-        if self.reference_text:
-            logger.info(f"📚 已加载 {len(self.skill.list_references())} 篇参考资料")
+        # 7. Skill 级临时 hooks
+        hook_resolver = HookResolver(self.skill)
+        self.skill_hooks = hook_resolver.resolve()
+        if self.skill_hooks:
+            logger.info(f"🔒 已启用 skill 级 hooks: {hook_resolver.hook_names}")
 
         return self
 
@@ -130,16 +150,22 @@ class SkillExecutorContext:
         validate_skill_metadata_tools(declared, result.tools)
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # 保存 skill 记忆
+        if self.memory:
+            try:
+                self.memory.touch_last_run()
+                await self.memory.save()
+            except Exception:
+                logger.exception("保存 Skill 记忆失败")
+
         # Post script
-        post_script = self.scripts_meta.get("post")
-        if post_script and self.script_runner:
-            ctx = ScriptContext(self.skill.name, self.merged_vars)
-            self.script_runner.run(self.skill.dir / post_script, ctx)
-            if ctx.output:
-                logger.info(f"   脚本输出: {ctx.output}")
+        if self._script_phase:
+            post_output = self._script_phase.run_post(self.merged_vars)
+            if post_output:
+                logger.info(f"   脚本输出: {post_output}")
 
         # Templates
-        templates_meta = self.skill.metadata.get("templates", {})
+        templates_meta = self.skill.metadata.get("templates", {}) if self.skill else {}
         report_template = templates_meta.get("report") or templates_meta.get("default")
         if report_template and self.skill:
             template_path = self.skill.dir / report_template

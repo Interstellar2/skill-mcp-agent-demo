@@ -76,6 +76,7 @@ async def run_agent_mode(
     initial_messages: Optional[List[Dict[str, Any]]] = None,
     enable_checkpoint: bool = False,
     hooks_factory=None,
+    skill_hooks=None,
 ):
     """Agent 模式: 使用 LangChain + LLM，让大模型根据 SOP 自主决策调用工具."""
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -129,9 +130,9 @@ async def run_agent_mode(
             )
             if tracker is None:
                 async with t:
-                    await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster, model, initial_messages, enable_checkpoint, hooks_factory)
+                    await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster, model, initial_messages, enable_checkpoint, hooks_factory, skill_hooks=ctx.skill_hooks)
             else:
-                await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster, model, initial_messages, enable_checkpoint, hooks_factory)
+                await _run_agent(t, session, tools, llm, system_prompt, query, event_broadcaster, model, initial_messages, enable_checkpoint, hooks_factory, skill_hooks=ctx.skill_hooks)
 
         if mcp_pool is not None:
             await _execute(mcp_pool.session, mcp_pool.tools)
@@ -152,6 +153,7 @@ async def _run_agent(
     initial_messages: Optional[List[Dict[str, Any]]] = None,
     enable_checkpoint: bool = False,
     hooks_factory=None,
+    skill_hooks=None,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
 
@@ -165,9 +167,10 @@ async def _run_agent(
         from ..step_runner import build_step_hooks
         return build_step_hooks(tracker, event_broadcaster, enable_checkpoint=enable_checkpoint)
 
-    wrapped_tools = wrap_tools_with_step_runner(
+    wrapped_tools, runner, registry = wrap_tools_with_step_runner(
         tools, session, tracker, event_broadcaster, recorder, system_prompt, query, model,
         hooks_factory=hooks_factory or _default_hooks_factory,
+        skill_hooks=skill_hooks,
     )
 
     callbacks = [recorder]
@@ -183,10 +186,14 @@ async def _run_agent(
     lc_messages = reconstruct_lc_messages(recorder.messages)
 
     logger.info(f"🚀 开始执行: {query}")
-    result = await agent.ainvoke(
-        {"messages": lc_messages},
-        config={"callbacks": callbacks} if callbacks else None,
-    )
+    try:
+        result = await agent.ainvoke(
+            {"messages": lc_messages},
+            config={"callbacks": callbacks} if callbacks else None,
+        )
+    finally:
+        if registry:
+            registry.unregister()
 
     output = "(无输出)"
     if result.get("messages"):

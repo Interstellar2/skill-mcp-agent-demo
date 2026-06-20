@@ -14,6 +14,7 @@ from ..tracker import RunTracker
 from ..tracker.models import ExecutionPlan, PlanStep
 from .base import SkillExecutorContext, log_step_call, log_step_result, log_step_error
 from .step_runner import StepRunner, build_step_hooks, build_step_hooks
+from .hooks import skill_hooks_scope
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -176,10 +177,10 @@ async def run_plan_then_execute_mode(
             if tracker is None:
                 async with t:
                     await t.set_execution_plan(execution_plan)
-                    await _run_plan(t, session, plan_steps, event_broadcaster, enable_checkpoint=enable_checkpoint)
+                    await _run_plan(t, session, plan_steps, event_broadcaster, enable_checkpoint=enable_checkpoint, skill_hooks=ctx.skill_hooks)
             else:
                 await t.set_execution_plan(execution_plan)
-                await _run_plan(t, session, plan_steps, event_broadcaster, enable_checkpoint=enable_checkpoint)
+                await _run_plan(t, session, plan_steps, event_broadcaster, enable_checkpoint=enable_checkpoint, skill_hooks=ctx.skill_hooks)
 
         if mcp_pool is not None:
             await _execute(mcp_pool.session)
@@ -194,42 +195,44 @@ async def _run_plan(
     plan_steps: list,
     event_broadcaster: EventBroadcaster,
     enable_checkpoint: bool = False,
+    skill_hooks=None,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
     hooks = build_step_hooks(tracker, event_broadcaster, enable_checkpoint=enable_checkpoint)
     runner = StepRunner(session, tracker, event_broadcaster, hooks=hooks)
 
-    for step_data in plan_steps:
-        idx = step_data.get("step_index", 0)
-        tool_name = step_data["tool_name"]
-        arguments = step_data.get("arguments", {})
-        reasoning = step_data.get("reasoning", "")
-        output_variable = step_data.get("output_variable")
+    async with skill_hooks_scope(runner, skill_hooks or []):
+        for step_data in plan_steps:
+            idx = step_data.get("step_index", 0)
+            tool_name = step_data["tool_name"]
+            arguments = step_data.get("arguments", {})
+            reasoning = step_data.get("reasoning", "")
+            output_variable = step_data.get("output_variable")
 
-        executor_state = {
-            "plan_steps": plan_steps,
-            "current_step_index": idx,
-        }
+            executor_state = {
+                "plan_steps": plan_steps,
+                "current_step_index": idx,
+            }
 
-        step_rec = tracker.start_step(idx, tool_name, arguments)
-        log_step_call(idx, tool_name, arguments)
-        if reasoning:
-            logger.info(f"   理由: {reasoning}")
+            step_rec = tracker.start_step(idx, tool_name, arguments)
+            log_step_call(idx, tool_name, arguments)
+            if reasoning:
+                logger.info(f"   理由: {reasoning}")
 
-        try:
-            text = await runner.run(
-                step_rec,
-                tool_name,
-                arguments,
-                output_variable=output_variable,
-                step_checkpoint_state=executor_state,
-                compensator=step_data.get("compensator"),
-            )
-            log_step_result(text)
-        except Exception as e:
-            log_step_error(e)
-            logger.info("计划执行中断，后续步骤已跳过")
-            break
+            try:
+                text = await runner.run(
+                    step_rec,
+                    tool_name,
+                    arguments,
+                    output_variable=output_variable,
+                    step_checkpoint_state=executor_state,
+                    compensator=step_data.get("compensator"),
+                )
+                log_step_result(text)
+            except Exception as e:
+                log_step_error(e)
+                logger.info("计划执行中断，后续步骤已跳过")
+                break
 
     logger.info("=" * 60)
     logger.info(f"🎉 计划执行完毕！{tracker.record.skill_name} 已完成~")

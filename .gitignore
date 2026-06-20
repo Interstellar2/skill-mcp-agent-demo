@@ -13,9 +13,8 @@ frontend/dist/
 # 自动生成/运行时产物
 frontend/public/skills_data.json
 runs/
-
-# 日志与环境
 logs/
+data/
 .env
 .env.local
 

@@ -7,7 +7,8 @@ from .generator import (
     SkillGenerationError,
 )
 from .manager import Skill, SkillsManager
-from .parser import parse_sop_steps
+from .memory import SkillMemory
+from .parser import parse_gotchas, parse_sop_steps
 from .reference import ReferenceLoader
 from .script import ScriptContext, ScriptRunner
 from .template import render_sop, render_template_file, _resolve_variables
@@ -20,7 +21,9 @@ from .validator import (
 __all__ = [
     "Skill",
     "SkillsManager",
+    "SkillMemory",
     "parse_sop_steps",
+    "parse_gotchas",
     "ReferenceLoader",
     "ScriptContext",
     "ScriptRunner",

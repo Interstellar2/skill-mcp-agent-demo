@@ -12,6 +12,7 @@ from ..tracker.checkpoint import CheckpointManager
 from ..tracker.checkpoint_service import CheckpointService
 from .base import SkillExecutorContext
 from .step_runner import StepRunner, build_step_hooks
+from .hooks import skill_hooks_scope
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -132,9 +133,9 @@ async def run_parallel_mode(
             )
             if tracker is None:
                 async with t:
-                    await _run_batches(t, session, steps, batches, event_broadcaster, enable_checkpoint=enable_checkpoint)
+                    await _run_batches(t, session, steps, batches, event_broadcaster, enable_checkpoint=enable_checkpoint, skill_hooks=ctx.skill_hooks)
             else:
-                await _run_batches(t, session, steps, batches, event_broadcaster, enable_checkpoint=enable_checkpoint)
+                await _run_batches(t, session, steps, batches, event_broadcaster, enable_checkpoint=enable_checkpoint, skill_hooks=ctx.skill_hooks)
 
         if mcp_pool is not None:
             await _execute(mcp_pool.session)
@@ -153,6 +154,7 @@ async def _run_batches(
     batches: List[List[int]],
     event_broadcaster: EventBroadcaster,
     enable_checkpoint: bool = False,
+    skill_hooks=None,
 ):
     logger.info(f"   Run ID: {tracker.record.run_id}")
 
@@ -164,80 +166,81 @@ async def _run_batches(
     if enable_checkpoint:
         cp_service = CheckpointService(tracker, CheckpointManager(backend=tracker._backend))
 
-    for batch_idx, batch in enumerate(batches, 1):
-        logger.info(f"\n🏃 批次 {batch_idx}/{len(batches)}: 并行执行步骤 {batch}")
+    async with skill_hooks_scope(runner, skill_hooks or []):
+        for batch_idx, batch in enumerate(batches, 1):
+            logger.info(f"\n🏃 批次 {batch_idx}/{len(batches)}: 并行执行步骤 {batch}")
 
-        if event_broadcaster:
-            await event_broadcaster(
-                EventType.BATCH_START.value,
-                {
-                    "batch_index": batch_idx,
-                    "step_indices": batch,
-                    "total_batches": len(batches),
-                },
-            )
-
-        async def _execute_one(step_index: int) -> tuple:
-            step = steps[step_index - 1]
-            tool_name = step["tool_name"]
-            arguments = step["arguments"]
-            group_id = step.get("parallel_group_id")
-            output_variable = step.get("output_variable")
-
-            step_rec = tracker.start_step(step_index, tool_name, arguments)
-            if group_id:
-                step_rec.parallel_group_id = group_id
-
-            logger.info(f"📌 步骤 {step_index}: [{tool_name}] args={arguments}")
-            try:
-                text = await runner.run(
-                    step_rec,
-                    tool_name,
-                    arguments,
-                    output_variable=output_variable,
-                    compensator=step.get("compensator"),
+            if event_broadcaster:
+                await event_broadcaster(
+                    EventType.BATCH_START.value,
+                    {
+                        "batch_index": batch_idx,
+                        "step_indices": batch,
+                        "total_batches": len(batches),
+                    },
                 )
-                logger.info(f"   ➡️  [{step_index}] {text or '(无返回内容)'}")
-                return (step_index, "success", text)
-            except Exception as e:
-                logger.error(f"   ❌ [{step_index}] 调用失败: {e}")
-                return (step_index, "error", str(e))
 
-        results = await asyncio.gather(
-            *[_execute_one(i) for i in batch], return_exceptions=True
-        )
+            async def _execute_one(step_index: int) -> tuple:
+                step = steps[step_index - 1]
+                tool_name = step["tool_name"]
+                arguments = step["arguments"]
+                group_id = step.get("parallel_group_id")
+                output_variable = step.get("output_variable")
 
-        # 记录本批次已完成步骤
-        for r in results:
-            if isinstance(r, tuple) and r[1] == "success":
-                completed_step_indices.append(r[0])
+                step_rec = tracker.start_step(step_index, tool_name, arguments)
+                if group_id:
+                    step_rec.parallel_group_id = group_id
 
-        # 保存批次级 checkpoint，用于恢复时跳过已完成批次
-        if cp_service:
-            executor_state = {
-                "batches": batches,
-                "completed_step_indices": completed_step_indices,
-            }
-            cp = await cp_service.save_after_step(
-                step_index=batch[-1],
-                executor_state=executor_state,
-            )
-            if cp:
-                tracker.record.checkpoint_id = cp.checkpoint_id
+                logger.info(f"📌 步骤 {step_index}: [{tool_name}] args={arguments}")
+                try:
+                    text = await runner.run(
+                        step_rec,
+                        tool_name,
+                        arguments,
+                        output_variable=output_variable,
+                        compensator=step.get("compensator"),
+                    )
+                    logger.info(f"   ➡️  [{step_index}] {text or '(无返回内容)'}")
+                    return (step_index, "success", text)
+                except Exception as e:
+                    logger.error(f"   ❌ [{step_index}] 调用失败: {e}")
+                    return (step_index, "error", str(e))
 
-        if event_broadcaster:
-            await event_broadcaster(
-                EventType.BATCH_FINISH.value,
-                {
-                    "batch_index": batch_idx,
-                    "step_indices": batch,
-                },
+            results = await asyncio.gather(
+                *[_execute_one(i) for i in batch], return_exceptions=True
             )
 
-        errors = [r for r in results if isinstance(r, Exception) or (isinstance(r, tuple) and r[1] == "error")]
-        if errors:
-            logger.error("批次执行出错，停止后续步骤")
-            break
+            # 记录本批次已完成步骤
+            for r in results:
+                if isinstance(r, tuple) and r[1] == "success":
+                    completed_step_indices.append(r[0])
+
+            # 保存批次级 checkpoint，用于恢复时跳过已完成批次
+            if cp_service:
+                executor_state = {
+                    "batches": batches,
+                    "completed_step_indices": completed_step_indices,
+                }
+                cp = await cp_service.save_after_step(
+                    step_index=batch[-1],
+                    executor_state=executor_state,
+                )
+                if cp:
+                    tracker.record.checkpoint_id = cp.checkpoint_id
+
+            if event_broadcaster:
+                await event_broadcaster(
+                    EventType.BATCH_FINISH.value,
+                    {
+                        "batch_index": batch_idx,
+                        "step_indices": batch,
+                    },
+                )
+
+            errors = [r for r in results if isinstance(r, Exception) or (isinstance(r, tuple) and r[1] == "error")]
+            if errors:
+                logger.error("批次执行出错，停止后续步骤")
+                break
 
     logger.info("=" * 60)
     logger.info(f"🎉 并行执行完毕！{tracker.record.skill_name} 已完成~")

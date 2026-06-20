@@ -37,7 +37,7 @@ from kitchen_sop.skill import (
 )
 from kitchen_sop.tracker.state_backend import get_state_backend
 from cli import build_parser, _parse_var_args
-from commands import _list_runs_async, _replay_run_async
+from commands import _list_runs_async, _replay_run_async, skill_stats_command
 from router import resolve_mode, route_execution, route_resume_rollback
 
 # 加载 .env（只需在入口处执行一次）
@@ -135,6 +135,10 @@ async def main():
 
     if args.replay:
         await _replay_run_async(args.replay, backend=backend)
+        return
+
+    if args.skill_stats:
+        skill_stats_command()
         return
 
     # --- Skill 生成向导 ---

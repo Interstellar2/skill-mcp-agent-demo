@@ -3,6 +3,7 @@
 import asyncio
 
 from kitchen_sop.tracker import RunTracker
+from kitchen_sop.tracker.analytics import AnalyticsTracker
 from kitchen_sop.tracker.state_backend import get_state_backend
 
 
@@ -73,3 +74,20 @@ async def _replay_run_async(run_id: str, backend=None):
 def replay_run_command(run_id: str):
     """回放某次历史执行."""
     asyncio.run(_replay_run_async(run_id))
+
+
+def skill_stats_command():
+    """查看各 Skill 的调用统计."""
+    stats = AnalyticsTracker().get_stats()
+    if not stats:
+        print("暂无 Skill 调用记录。")
+        return
+
+    print(f"{'Skill':<20} {'调用':<8} {'成功':<8} {'失败':<8} {'最后运行'}")
+    print("-" * 60)
+    for name, data in sorted(stats.items()):
+        last = data["last_run_at"] or "-"
+        print(
+            f"{name:<20} {data['invocations']:<8} {data['successes']:<8} "
+            f"{data['failures']:<8} {last}"
+        )

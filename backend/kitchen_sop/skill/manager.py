@@ -1,9 +1,15 @@
-import yaml
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass
+
+import yaml
 
 from ..config import SKILLS_DIR
+from .parser import parse_gotchas
+
+
+logger = logging.getLogger("kitchen_agent")
 
 
 @dataclass
@@ -14,6 +20,7 @@ class Skill:
     dir: Path
     content: Optional[str] = None
     metadata: Optional[Dict] = None
+    gotchas: List[str] = field(default_factory=list)
 
     def load_full_content(self) -> str:
         if self.content is None:
@@ -32,6 +39,14 @@ class Skill:
     @property
     def templates_dir(self) -> Path:
         return self.dir / "templates"
+
+    @property
+    def reference_files(self) -> List[str]:
+        """frontmatter `references` 列表；未指定时返回空列表."""
+        if not self.metadata:
+            return []
+        refs = self.metadata.get("references", [])
+        return refs if isinstance(refs, list) else []
 
     def list_scripts(self) -> List[Path]:
         if not self.scripts_dir.exists():
@@ -81,13 +96,38 @@ class SkillsManager:
                 except yaml.YAMLError as e:
                     print(f"frontmatter 解析失败: {e}")
 
+        description = metadata.get("description", "无描述")
+        self._warn_description(skill_dir.name, description)
+
+        gotchas = parse_gotchas(content)
+
         return Skill(
             name=metadata.get("name", skill_dir.name),
-            description=metadata.get("description", "无描述"),
+            description=description,
             path=skill_file,
             dir=skill_dir,
             metadata=metadata,
+            gotchas=gotchas,
         )
+
+    @staticmethod
+    def _warn_description(skill_name: str, description: str) -> None:
+        """对 description 做启发式检查并打 warning."""
+        if len(description) > 250:
+            logger.warning(
+                f"Skill '{skill_name}' 的 description 长度为 {len(description)}，"
+                f"超过 250 字符，Claude Code 只能看到前 250 字符。"
+            )
+        trigger_prefixes = (
+            "当", "如果", "如果用户", "当需要", "当用户", "当要", "use when",
+            "call when", "trigger when", "when", "if ", "if you",
+        )
+        lowered = description.lower()
+        if not any(lowered.startswith(p) for p in trigger_prefixes):
+            logger.warning(
+                f"Skill '{skill_name}' 的 description 看起来不像触发式描述: "
+                f"{description[:50]}..."
+            )
 
     def activate_skill(self, skill_name: str) -> Optional[str]:
         skill = self.skills.get(skill_name)
