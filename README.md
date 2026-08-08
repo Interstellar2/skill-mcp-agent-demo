@@ -206,8 +206,9 @@ python backend/main.py --replay <run_id>
 │       │   ├── script.py            # Skill 脚本执行引擎（pre/post hooks）
 │       │   ├── reference.py         # 参考资料加载与格式化
 │       │   └── validator.py         # SKILL 校验：工具存在性 + 参数 Schema 匹配
-│       ├── mcp_client.py            # MCP 客户端连接管理（CLI 兼容）
+│       ├── mcp_client.py            # MCP 客户端连接管理（SDK v2 Client，CLI 兼容）
 │       ├── mcp_pool.py              # MCP 单例连接池（Web 并发共享）
+│       ├── mcp_adapter.py           # MCP→LangChain 工具适配 shim（替代 langchain-mcp-adapters）
 │       ├── hitl_bridge.py           # HITL 异步信号桥（Web 模式）
 │       ├── tracker/                 # 执行观测与审计
 │       │   ├── __init__.py
@@ -291,7 +292,8 @@ python backend/main.py --replay <run_id>
 │       └── skills_data.json         # 构建产物：Skill 数据（自动生成）
 │
 ├── scripts/
-│   └── build_skills_json.py         # 构建脚本：skills/ → frontend/public/skills_data.json
+│   ├── build_skills_json.py         # 构建脚本：skills/ → frontend/public/skills_data.json
+│   └── demo_protocol_eras.py        # MCP 协议前后版本（2025-11-25 vs 2026-07-28）对比演示
 │
 ├── skills/                          # Skill 目录（每个 Skill 一个子目录）
 │   ├── tomato_egg/                  # 番茄炒蛋（带变量 + scripts + reference + parallel-group）
@@ -505,6 +507,25 @@ templates:
 **Client → Server**：
 - `hitl_approval` — 发送 HITL 审批决定
 - `ping` — 心跳
+
+---
+
+## MCP 协议版本（2026-07-28）
+
+本项目使用 **MCP Python SDK v2（mcp>=2.0.0）**，支持 2026-07-28 正式版无状态协议。SDK v2 的 server 是 **dual-era** 的：同一个 `backend/mcp_server.py` 进程无需任何配置即可同时应答——
+
+- **旧时代（2025-11-25 及之前）**：`initialize` / `notifications/initialized` 三次握手，会话级版本协商；
+- **新时代（2026-07-28）**：无握手、无协议会话，`server/discover` 一次探测 + 每个请求通过 `_meta` envelope 自描述（`protocolVersion` / `clientInfo` / `clientCapabilities`），结果携带 `resultType`、`ttlMs`/`cacheScope` 缓存提示。
+
+运行对比演示（裸 JSON-RPC over stdio，逐条打印两个时代的 wire 消息）：
+
+```bash
+python scripts/demo_protocol_eras.py
+```
+
+客户端侧由 `kitchen_sop/mcp_client.py` / `mcp_pool.py` 的 `mode` 参数控制协商模式：`"auto"`（默认，优先新时代）、`"legacy"`（强制旧握手）、`"2026-07-28"`（钉死新版）。
+
+> 注：`langchain-mcp-adapters` 目前尚未兼容 mcp 2.0（钉死 `mcp<2.0.0`），项目内置了等价 shim `kitchen_sop/mcp_adapter.py`（`load_mcp_tools_compat`）；官方适配器支持 v2 后可直接替换。
 
 ---
 

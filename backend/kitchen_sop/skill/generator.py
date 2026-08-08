@@ -39,7 +39,8 @@ def _load_example_skill_markdown() -> str:
 
 def _format_tool_schema(tool: Any) -> Dict[str, Any]:
     """将 MCP 工具对象序列化为可嵌入 prompt 的字典."""
-    schema = getattr(tool, "inputSchema", None) or {}
+    # SDK v2 使用 snake_case（input_schema），兼容旧对象保留 inputSchema 回退
+    schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
     if not isinstance(schema, dict):
         try:
             schema = json.loads(schema)

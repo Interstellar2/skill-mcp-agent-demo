@@ -57,7 +57,8 @@ def _get_nested(schema: Dict[str, Any], *keys: str) -> Any:
 
 def _schema_for_tool(tool) -> Dict[str, Any]:
     """统一获取工具的输入 Schema."""
-    schema = getattr(tool, "inputSchema", None) or {}
+    # SDK v2 使用 snake_case（input_schema），兼容旧对象保留 inputSchema 回退
+    schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
     if not isinstance(schema, dict):
         try:
             schema = json.loads(schema)

@@ -1,13 +1,17 @@
-"""MCP 单例连接池：在 FastAPI lifespan 中启动，所有 executor 共享一个 MCP session."""
+"""MCP 单例连接池：在 FastAPI lifespan 中启动，所有 executor 共享一个 MCP 连接.
+
+基于 MCP Python SDK v2 的 ``Client``（协议 2026-07-28，dual-era 自动协商）。
+"""
 
 import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
 
-from mcp import ClientSession, StdioServerParameters
+from mcp import Client, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from langchain_mcp_adapters.tools import load_mcp_tools
+
+from .mcp_adapter import load_mcp_tools_compat
 
 logger = logging.getLogger("kitchen_agent")
 
@@ -26,69 +30,63 @@ class MCPConnectionPool:
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, server_script: str = _DEFAULT_MCP_SERVER):
+    def __init__(self, server_script: str = _DEFAULT_MCP_SERVER, mode: str = "auto"):
         if self._initialized:
             return
         self.server_script = server_script
+        self.mode = mode
         self._tool_lock = asyncio.Lock()
-        self._session: Optional[ClientSession] = None
+        self._client: Optional[Client] = None
         self._tools: Optional[list] = None
-        self._read = None
-        self._write = None
-        self._stdio_ctx = None
-        self._session_ctx = None
         self._mcp_tools: Optional[list] = None
         self._initialized = True
 
     async def start(self):
         """启动 MCP 连接（幂等）."""
         async with self._lock:
-            if self._session is not None:
+            if self._client is not None:
                 return
             server_params = StdioServerParameters(
                 command="python",
                 args=[self.server_script],
                 env=None,
             )
-            self._stdio_ctx = stdio_client(server_params)
-            self._read, self._write = await self._stdio_ctx.__aenter__()
-            self._session_ctx = ClientSession(self._read, self._write)
-            self._session = await self._session_ctx.__aenter__()
-            await self._session.initialize()
-            self._tools = await load_mcp_tools(self._session)
-            # 同时缓存 MCP 原生工具列表（含 JSON Schema），供验证器使用
-            tools_result = await self._session.list_tools()
-            self._mcp_tools = tools_result.tools
+            client = Client(stdio_client(server_params), mode=self.mode)
+            await client.__aenter__()
+            try:
+                self._tools = await load_mcp_tools_compat(client)
+                # 同时缓存 MCP 原生工具列表（含 JSON Schema），供验证器使用
+                tools_result = await client.list_tools()
+                self._mcp_tools = tools_result.tools
+            except Exception:
+                await client.__aexit__(None, None, None)
+                raise
+            self._client = client
             logger.info(
                 f"MCPConnectionPool started with {len(self._tools)} tools "
-                f"({len(self._mcp_tools)} raw MCP tools)"
+                f"({len(self._mcp_tools)} raw MCP tools, "
+                f"protocol {client.protocol_version})"
             )
 
     async def stop(self):
         """关闭 MCP 连接."""
         async with self._lock:
-            if self._session_ctx is not None:
+            if self._client is not None:
                 try:
-                    await self._session_ctx.__aexit__(None, None, None)
+                    await self._client.__aexit__(None, None, None)
                 except Exception:
                     pass
-                self._session_ctx = None
-            if self._stdio_ctx is not None:
-                try:
-                    await self._stdio_ctx.__aexit__(None, None, None)
-                except Exception:
-                    pass
-                self._stdio_ctx = None
-            self._session = None
+                self._client = None
             self._tools = None
             self._mcp_tools = None
             logger.info("MCPConnectionPool stopped")
 
     @property
-    def session(self) -> ClientSession:
-        if self._session is None:
+    def session(self) -> Client:
+        """返回 v2 Client（call_tool/list_tools 接口与原 ClientSession 兼容）."""
+        if self._client is None:
             raise RuntimeError("MCPConnectionPool not started")
-        return self._session
+        return self._client
 
     @property
     def tools(self) -> list:
@@ -98,7 +96,7 @@ class MCPConnectionPool:
 
     @property
     def mcp_tools(self) -> list:
-        """返回 MCP 原生 Tool 对象列表（含 inputSchema），供验证器使用."""
+        """返回 MCP 原生 Tool 对象列表（含 input_schema），供验证器使用."""
         if self._mcp_tools is None:
             raise RuntimeError("MCPConnectionPool not started")
         return self._mcp_tools
@@ -106,7 +104,7 @@ class MCPConnectionPool:
     async def call_tool(self, tool_name: str, arguments: dict):
         """带锁的 call_tool，保证 JSON-RPC over stdio 串行化."""
         async with self._tool_lock:
-            return await self._session.call_tool(tool_name, arguments=arguments)
+            return await self._client.call_tool(tool_name, arguments=arguments)
 
     async def __aenter__(self):
         await self.start()

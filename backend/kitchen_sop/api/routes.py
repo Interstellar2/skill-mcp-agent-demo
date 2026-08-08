@@ -181,7 +181,7 @@ async def list_tools():
         ToolOut(
             name=t.name,
             description=t.description or "",
-            inputSchema=t.inputSchema if isinstance(t.inputSchema, dict) else {},
+            inputSchema=t.input_schema if isinstance(t.input_schema, dict) else {},
         )
         for t in result.tools
     ]

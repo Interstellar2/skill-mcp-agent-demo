@@ -11,7 +11,6 @@ Kitchen MCP Server - 厨房工具 MCP 服务器（MOCK）
 运行方式: python mcp_server.py
 """
 
-import asyncio
 import functools
 import json
 import logging
@@ -19,7 +18,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import CacheHint, MCPServer
 
 
 # ============ 日志配置 ============
@@ -96,7 +95,12 @@ def log_tool_call(func):
 
 # ============ MCP 服务器实例 ============
 
-mcp = FastMCP("kitchen")
+# MCP 2026-07-28：SDK v2 的 dual-era server 默认同时支持旧时代 initialize 握手
+# （协议 2025-11-25）与新时代 server/discover 无状态协议，无需额外配置。
+mcp = MCPServer(
+    "kitchen",
+    cache_hints={"tools/list": CacheHint(ttl_ms=60_000, scope="private")},
+)
 
 
 # ============ 工具定义 ============
@@ -222,4 +226,4 @@ def plate(garnish: str = "") -> str:
 
 if __name__ == "__main__":
     logger.info("MCP Kitchen Server 启动，等待客户端连接...")
-    asyncio.run(mcp.run_stdio_async())
+    mcp.run(transport="stdio")
