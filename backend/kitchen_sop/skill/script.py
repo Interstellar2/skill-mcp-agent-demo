@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
@@ -34,8 +35,9 @@ class ScriptRunner:
             env[f"SKILL_VAR_{key}"] = str(value)
 
         try:
+            # 用当前 Python 解释器执行，不要求脚本具备 shebang/可执行权限
             result = subprocess.run(
-                [str(script_path)],
+                [sys.executable, str(script_path)],
                 capture_output=True,
                 text=True,
                 env=env,
